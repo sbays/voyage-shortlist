@@ -102,6 +102,19 @@ Decisions made while building, in addition to the ones in `plan.md`. Newest at t
 - **Decision:** with the 10 evaluation briefs, a run passes when at least 7 expected picks land in the top 3 and at least 4 land at number 1. Every run reports its total cost in GBP.
 - **Why:** "most" needs a number before it can be tested, and reporting cost lets prompt changes be compared on both quality and cost.
 
+## 2026-11-11: GCP setup is a re-runnable script; the deployer can't change IAM
+
+- **Decision:** `scripts/gcp-setup.sh` creates everything Phase 0 needs, in four steps (`base`, `connect`, `trigger`, `public`). Two service accounts: `voyage-web` runs the Cloud Run service and has no roles until Phase 1, and `voyage-build` runs the trigger with only `logging.logWriter`, `run.developer`, `artifactregistry.writer` on the one repo, and `iam.serviceAccountUser` on `voyage-web`. Public access (`allUsers` as `run.invoker`) is granted once by hand after the first deploy, not by `--allow-unauthenticated` in `cloudbuild.yaml`. The budget alert is £20 a month, with emails at 50% and 90% of actual spend and 100% of forecast. Cloud Build uses a 2nd-gen GitHub connection in `europe-west2`.
+- **Why:** `--allow-unauthenticated` needs `run.admin`, which would let a compromised build change any service's IAM. A script is reviewable, repeatable and shows the setup in the portfolio.
+- **Cloud Build's service agent and Secret Manager:** Google's docs ask for project-wide `secretmanager.admin` on the Cloud Build service agent, so it can store the GitHub token when the connection is created. `connect` grants it only for that step. `trigger` then replaces it with `secretAccessor` on the one token secret, so the agent can't read the Anthropic key added in Phase 2. If the connection ever needs re-authorising, re-run `connect` and then `trigger`.
+- **Public access can be lost:** recreating the Cloud Run service drops the `allUsers` binding. The `check-public` build step prints a warning when that happens, and the build stays green.
+
+## 2026-11-11: a branch and PR for every stage, reviewed first
+
+- **Decision:** each stage of work is done on its own branch. Before a PR is created, `/code-review` runs on the stage's changes and every finding is reported to the user, who decides which ones to fix. Then `/pr` writes the PR description, the PR is opened, and merging it to main triggers the deploy. The push-to-main trigger is unchanged: a merge is the push.
+- **Why:** bugs are caught before they reach main, where every push deploys. The user stays in charge of which findings matter. Portfolio reviewers can read the project stage by stage, one PR at a time.
+- **Replaces:** an earlier decision the same day to review before each commit and commit straight to main.
+
 ## Open
 
 - **Anthropic API key:** a dedicated key with a spend limit, needed from Phase 2.

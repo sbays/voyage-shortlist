@@ -1,5 +1,6 @@
-# Runs on every push to main (see the trigger in README). Checks first, then
-# builds the image into Artifact Registry and deploys it to Cloud Run.
+# Runs on every push to main, through the trigger created by
+# `scripts/gcp-setup.sh trigger`. Checks first, then builds the image into
+# Artifact Registry and deploys it to Cloud Run.
 
 substitutions:
   _REGION: europe-west2
@@ -57,7 +58,24 @@ steps:
       - --service-account=${_RUNTIME_SA}
       - --min-instances=0
       - --max-instances=2
-      - --allow-unauthenticated
+      # Public access is granted once by `scripts/gcp-setup.sh public`, so this
+      # build account only needs run.developer, not run.admin. Redeploys keep
+      # the binding, but deleting and recreating the service loses it: the
+      # next step warns when that has happened.
+
+  - id: check-public
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        if gcloud run services get-iam-policy ${_SERVICE} --project=${PROJECT_ID} \
+            --region=${_REGION} --format='value(bindings.members)' | grep -q allUsers; then
+          echo "Service is public."
+        else
+          echo "WARNING: ${_SERVICE} is not public, so visitors get 403."
+          echo "WARNING: run: bash scripts/gcp-setup.sh public"
+        fi
 
 images:
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}

@@ -111,6 +111,14 @@ For both calls:
 
 Each phase ends with the app deployed and working on Cloud Run, so Phase 0 sets up the pipeline first.
 
+**Branch and PR per stage:** every stage of work happens on its own branch, never directly on main.
+
+1. Run `/code-review` against the stage's changes.
+2. Report every finding to the user explicitly, before any PR is created.
+3. The user chooses which findings to fix. Fix those, and note the reason for any that are dismissed.
+4. Write the PR description with `/pr`, then open the PR.
+5. Merging the PR to main triggers the deploy.
+
 ### Phase 0: skeleton and pipeline
 - Scaffold the Next.js app (standalone output, Dockerfile).
 - GCP project setup: enable APIs, Artifact Registry repo, a dedicated service account per service with least privilege, a GCP budget alert.

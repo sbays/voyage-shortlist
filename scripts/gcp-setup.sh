@@ -10,6 +10,8 @@
 #   bash scripts/gcp-setup.sh pr-checks # typecheck, lint and test on every PR to main
 #   bash scripts/gcp-setup.sh database  # db job account and the 2 Neon connection secrets
 #   bash scripts/gcp-setup.sh anthropic # the Anthropic API key secret, readable by voyage-web only
+#   bash scripts/gcp-setup.sh imports   # CSV upload bucket and the demo admin token secret
+#   bash scripts/gcp-setup.sh jobs      # nightly matches and weekly reseed jobs, and their schedules
 set -euo pipefail
 
 PROJECT=tern-floe
@@ -27,6 +29,14 @@ DB_SA="voyage-db@${PROJECT}.iam.gserviceaccount.com"
 DB_ADMIN_SECRET=voyage-db-admin-url
 DB_WEB_SECRET=voyage-db-web-url
 ANTHROPIC_SECRET=anthropic-api-key
+IMPORT_BUCKET=tern-floe-imports
+ADMIN_TOKEN_SECRET=demo-admin-token
+JOBS_SA="voyage-jobs@${PROJECT}.iam.gserviceaccount.com"
+SCHEDULER_SA="voyage-scheduler@${PROJECT}.iam.gserviceaccount.com"
+DB_JOB=voyage-db
+MATCHES_JOB=voyage-matches
+RESEED_JOB=voyage-reseed
+SCHEDULE_TZ=Europe/London
 
 g() { gcloud --project="$PROJECT" --quiet "$@"; }
 say() { printf '\n==> %s\n' "$*"; }
@@ -369,9 +379,134 @@ anthropic() {
   fi
 }
 
+# The CSV upload keeps each file in a private bucket for 90 days. voyage-web
+# can add files but not read, list or delete them, and only the web app
+# knows the admin token that unlocks the upload page.
+imports() {
+  say "Enabling the Cloud Storage API"
+  g services enable storage.googleapis.com
+
+  say "Upload bucket gs://${IMPORT_BUCKET}"
+  if g storage buckets describe "gs://${IMPORT_BUCKET}" >/dev/null 2>&1; then
+    echo "bucket exists"
+  else
+    g storage buckets create "gs://${IMPORT_BUCKET}" --location="$REGION" \
+      --uniform-bucket-level-access --public-access-prevention
+  fi
+  local lifecycle
+  lifecycle=$(mktemp)
+  printf '%s\n' '{"rule":[{"action":{"type":"Delete"},"condition":{"age":90}}]}' >"$lifecycle"
+  g storage buckets update "gs://${IMPORT_BUCKET}" --lifecycle-file="$lifecycle" >/dev/null
+  rm -f "$lifecycle"
+  echo "uploads are deleted after 90 days"
+  g_iam storage buckets add-iam-policy-binding "gs://${IMPORT_BUCKET}" \
+    --member="serviceAccount:${WEB_SA}" --role=roles/storage.objectCreator >/dev/null
+  echo "voyage-web can add files to the bucket, and nothing else"
+
+  say "Demo admin token secret (global; the value is added by hand)"
+  ensure_secret "$ADMIN_TOKEN_SECRET"
+  g_iam secrets add-iam-policy-binding "$ADMIN_TOKEN_SECRET" \
+    --member="serviceAccount:${WEB_SA}" --role=roles/secretmanager.secretAccessor >/dev/null
+  echo "voyage-web reads ${ADMIN_TOKEN_SECRET}"
+
+  local latest
+  latest=$(g secrets versions list "$ADMIN_TOKEN_SECRET" --filter=state=ENABLED --limit=1 --format='value(name)')
+  if [[ -n "$latest" ]]; then
+    say "Admin token has a value (version ${latest##*/}). Imports setup complete."
+  else
+    echo
+    echo "No token yet. Generate one straight into the secret, without it touching"
+    echo "your shell history:"
+    echo
+    echo "  openssl rand -base64 32 | tr -d '\n' | gcloud secrets versions add ${ADMIN_TOKEN_SECRET} --project=${PROJECT} --data-file=-"
+    echo
+    echo "Copy it to the clipboard when you need to upload a file (it has no trailing"
+    echo "newline, so zsh would print a % after it on screen; piping avoids copying that):"
+    echo
+    echo "  gcloud secrets versions access latest --secret=${ADMIN_TOKEN_SECRET} --project=${PROJECT} | pbcopy"
+    echo
+    echo "The deploy mounts this secret, so it needs a value before the next merge."
+  fi
+}
+
+# Creates a Cloud Run job from the image the migration job already runs, if
+# it doesn't exist. Each deploy then moves it to the new image (cloudbuild.yaml).
+ensure_db_image_job() {
+  local name=$1 sa=$2 secret=$3 command=$4 image
+  if g run jobs describe "$name" --region="$REGION" >/dev/null 2>&1; then
+    echo "job ${name} exists"
+    return
+  fi
+  image=$(g run jobs describe "$DB_JOB" --region="$REGION" \
+    --format='value(spec.template.spec.template.spec.containers[0].image)')
+  [[ -n "$image" ]] ||
+    { echo "Couldn't read the ${DB_JOB} job's image. Deploy once (merge to main), then re-run this step."; exit 1; }
+  g run jobs create "$name" --region="$REGION" --image="$image" \
+    --service-account="$sa" --set-secrets="DATABASE_URL=${secret}:latest" \
+    --args="$command" --tasks=1 --max-retries=1 --task-timeout=600s >/dev/null
+  echo "job ${name} created from ${image}"
+}
+
+# The scheduler calls the Cloud Run Admin API's :run endpoint as
+# voyage-scheduler, which may run these two jobs and nothing else.
+ensure_schedule() {
+  local name=$1 schedule=$2 job=$3 description=$4
+  local uri="https://run.googleapis.com/v2/projects/${PROJECT}/locations/${REGION}/jobs/${job}:run"
+  local verb=create
+  g scheduler jobs describe "$name" --location="$REGION" >/dev/null 2>&1 && verb=update
+  g scheduler jobs "$verb" http "$name" --location="$REGION" \
+    --schedule="$schedule" --time-zone="$SCHEDULE_TZ" --uri="$uri" --http-method=POST \
+    --oauth-service-account-email="$SCHEDULER_SA" \
+    --oauth-token-scope=https://www.googleapis.com/auth/cloud-platform \
+    --description="$description" >/dev/null
+  echo "schedule ${name}: '${schedule}' ${SCHEDULE_TZ} -> ${job} (${verb}d)"
+}
+
+# Not called `jobs`: that would shadow the shell's own `jobs` builtin.
+scheduled_jobs() {
+  say "Enabling the Cloud Scheduler API"
+  g services enable cloudscheduler.googleapis.com
+
+  say "Job accounts"
+  ensure_sa voyage-jobs "Voyage shortlist: nightly matches job (rows only)"
+  ensure_sa voyage-scheduler "Voyage shortlist: Cloud Scheduler caller"
+  # The matches job only reads and writes rows, so it gets the web role's
+  # connection string, never the admin one.
+  g_iam secrets add-iam-policy-binding "$DB_WEB_SECRET" \
+    --member="serviceAccount:${JOBS_SA}" --role=roles/secretmanager.secretAccessor >/dev/null
+  # Lets the build move voyage-matches to each new image. It already may act
+  # as voyage-db (the database step), which runs the reseed.
+  g_iam iam service-accounts add-iam-policy-binding "$JOBS_SA" \
+    --member="serviceAccount:${BUILD_SA}" --role=roles/iam.serviceAccountUser >/dev/null
+  echo "voyage-jobs reads ${DB_WEB_SECRET}; the build may deploy jobs that run as it"
+
+  say "Cloud Run jobs"
+  ensure_db_image_job "$MATCHES_JOB" "$JOBS_SA" "$DB_WEB_SECRET" matches
+  ensure_db_image_job "$RESEED_JOB" "$DB_SA" "$DB_ADMIN_SECRET" seed
+  local job
+  for job in "$MATCHES_JOB" "$RESEED_JOB"; do
+    g_iam run jobs add-iam-policy-binding "$job" --region="$REGION" \
+      --member="serviceAccount:${SCHEDULER_SA}" --role=roles/run.invoker >/dev/null
+  done
+  echo "voyage-scheduler may run ${MATCHES_JOB} and ${RESEED_JOB}, and nothing else"
+
+  say "Schedules (${SCHEDULE_TZ})"
+  # Matches run nightly at 02:00. The Sunday reseed at 03:00 records every
+  # saved brief's current candidates as known, so a matches run straight
+  # after it would find nothing: the next night's run picks up from there.
+  ensure_schedule voyage-nightly-matches "0 2 * * *" "$MATCHES_JOB" \
+    "Find new matches for saved briefs"
+  ensure_schedule voyage-weekly-reseed "0 3 * * 0" "$RESEED_JOB" \
+    "Reset the demo catalogue to the seed data for the current season"
+
+  say "Jobs setup complete. Try one now:"
+  echo "  gcloud run jobs execute ${MATCHES_JOB} --project=${PROJECT} --region=${REGION} --wait"
+}
+
 case "${1:-}" in
-  base | connect | trigger | public | database) "$1" ;;
+  base | connect | trigger | public | database | imports) "$1" ;;
+  jobs) scheduled_jobs ;;
   pr-checks) pr_checks ;;
   anthropic) anthropic ;;
-  *) sed -n '5,12p' "$0"; exit 1 ;;
+  *) sed -n '5,14p' "$0"; exit 1 ;;
 esac

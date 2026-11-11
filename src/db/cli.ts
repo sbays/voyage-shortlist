@@ -1,11 +1,13 @@
-// Entry point for the `voyage-db` Cloud Run job and for local scripts:
-//   node src/db/cli.ts migrate   apply pending migrations
-//   node src/db/cli.ts seed      reset the catalogue to the seed data
+// Entry point for the db image's Cloud Run jobs and for local scripts:
+//   node src/db/cli.ts migrate   apply pending migrations (voyage-db, each deploy)
+//   node src/db/cli.ts seed      reset the catalogue to the seed data (voyage-reseed, weekly)
 //   node src/db/cli.ts setup     migrate, then seed only if there are no departures
+//   node src/db/cli.ts matches   write new matches for saved briefs (voyage-matches, nightly)
 // Connects to DATABASE_URL, or to the local PGlite database in .data/ when
 // it isn't set.
 
 import { LOCAL_DATA_DIR, type Db } from "./db.ts";
+import { findNewMatches } from "./find-matches.ts";
 import { grantWebRole, migrate } from "./migrate.ts";
 import { seed } from "./seed.ts";
 
@@ -26,8 +28,8 @@ async function connect(): Promise<Db> {
 }
 
 async function main(command: string | undefined): Promise<void> {
-  if (command !== "migrate" && command !== "seed" && command !== "setup") {
-    console.error("Usage: node src/db/cli.ts migrate|seed|setup");
+  if (command !== "migrate" && command !== "seed" && command !== "setup" && command !== "matches") {
+    console.error("Usage: node src/db/cli.ts migrate|seed|setup|matches");
     process.exitCode = 2;
     return;
   }
@@ -42,17 +44,22 @@ async function main(command: string | undefined): Promise<void> {
         await grantWebRole(db, webRole);
         console.log(`Granted row access to ${webRole}`);
       }
+    } else if (command === "matches") {
+      // No migrate here: this job connects as the web role, which can't run DDL.
+      const { briefsChecked, briefsFailed, matchesWritten } = await findNewMatches(db);
+      console.log(`Checked ${briefsChecked} saved briefs, wrote ${matchesWritten} new matches`);
+      if (briefsFailed > 0) console.warn(`Skipped ${briefsFailed} saved briefs that couldn't be checked`);
     } else if (command === "seed") {
       await migrate(db);
-      await seed(db);
-      console.log("Catalogue reset to the seed data");
+      await seed(db, { now: new Date() });
+      console.log("Catalogue reset to the seed data, dated for the current season");
     } else {
       await migrate(db);
       const [{ count }] = await db.query<{ count: number }>(
         "SELECT count(*)::int AS count FROM departures",
       );
       if (count === 0) {
-        await seed(db);
+        await seed(db, { now: new Date() });
         console.log("Empty catalogue seeded");
       } else {
         console.log(`Catalogue has ${count} departures, not reseeding`);

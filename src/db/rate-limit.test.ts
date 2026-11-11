@@ -3,10 +3,14 @@ import type { Db } from "./db.ts";
 import { migrate } from "./migrate.ts";
 import { createPgliteDb } from "./pglite.ts";
 import {
+  adminTokenKey,
   CALLS_PER_HOUR_GLOBAL,
   CALLS_PER_IP_PER_HOUR,
   consumeClaudeCalls,
+  countAgainst,
+  FAILED_TOKEN_ATTEMPTS_PER_HOUR,
   ipKey,
+  isOverLimit,
 } from "./rate-limit.ts";
 
 let db: Db;
@@ -69,6 +73,34 @@ describe("consumeClaudeCalls", () => {
     await consumeClaudeCalls(db, "1.2.3.4", 1, at("2026-11-11T10:00:00Z"));
     const keys = await db.query<{ key: string }>("SELECT key FROM rate_limits ORDER BY key");
     expect(keys.map((k) => k.key)).toEqual(["global", ipKey("1.2.3.4")]);
+    expect(keys.some((k) => k.key.includes("1.2.3.4"))).toBe(false);
+  });
+});
+
+describe("failed admin token attempts", () => {
+  it("refuses an address after 10 wrong tokens in an hour, and only that address", async () => {
+    const now = at("2026-11-11T10:00:00Z");
+    const key = adminTokenKey("1.2.3.4");
+    for (let i = 0; i < FAILED_TOKEN_ATTEMPTS_PER_HOUR - 1; i++) await countAgainst(db, key, 1, now);
+    expect(await isOverLimit(db, key, FAILED_TOKEN_ATTEMPTS_PER_HOUR, now)).toEqual({ over: false });
+
+    await countAgainst(db, key, 1, now);
+    expect(await isOverLimit(db, key, FAILED_TOKEN_ATTEMPTS_PER_HOUR, at("2026-11-11T10:40:00Z"))).toEqual({
+      over: true,
+      retryAfterSeconds: 20 * 60,
+    });
+    expect(
+      await isOverLimit(db, adminTokenKey("5.6.7.8"), FAILED_TOKEN_ATTEMPTS_PER_HOUR, now),
+    ).toEqual({ over: false });
+    expect(await isOverLimit(db, key, FAILED_TOKEN_ATTEMPTS_PER_HOUR, at("2026-11-11T11:00:00Z"))).toEqual({
+      over: false,
+    });
+  });
+
+  it("keeps token attempts apart from Claude calls, and stores no address", async () => {
+    await countAgainst(db, adminTokenKey("1.2.3.4"), 5, at("2026-11-11T10:00:00Z"));
+    expect(await consumeClaudeCalls(db, "1.2.3.4", 1, at("2026-11-11T10:00:00Z"))).toEqual({ ok: true });
+    const keys = await db.query<{ key: string }>("SELECT key FROM rate_limits");
     expect(keys.some((k) => k.key.includes("1.2.3.4"))).toBe(false);
   });
 });

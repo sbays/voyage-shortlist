@@ -1,7 +1,8 @@
 # Runs on every push to main, through the trigger created by
 # `scripts/gcp-setup.sh trigger`. Checks first, then builds the web and db
 # images into Artifact Registry, runs the database migrations as the voyage-db
-# Cloud Run job, and deploys the web service. A failed migration stops the
+# Cloud Run job, moves the scheduled jobs to the new db image, and deploys the
+# web service. A failed migration stops the
 # build before the deploy, so the live site keeps its current revision.
 
 substitutions:
@@ -83,6 +84,28 @@ steps:
       - --region=${_REGION}
       - --wait
 
+  # The nightly matches and weekly reseed jobs run the same db image, so each
+  # deploy moves them to it. Only the image changes; their accounts, secrets
+  # and arguments were set by `scripts/gcp-setup.sh jobs`, which must have run
+  # once before this step can succeed.
+  - id: update-scheduled-jobs
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -euo
+      - pipefail
+      - -c
+      - |
+        for job in voyage-matches voyage-reseed; do
+          if ! gcloud run jobs describe "$$job" --project=${PROJECT_ID} --region=${_REGION} >/dev/null 2>&1; then
+            echo "ERROR: Cloud Run job $$job doesn't exist."
+            echo "ERROR: run: bash scripts/gcp-setup.sh jobs"
+            exit 1
+          fi
+          gcloud run jobs update "$$job" --project=${PROJECT_ID} --region=${_REGION} \
+            --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/db:${SHORT_SHA}
+        done
+
   - id: deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: gcloud
@@ -95,7 +118,9 @@ steps:
       - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}
       - --service-account=${_RUNTIME_SA}
       # Rows only (no DDL), and readable only by voyage-web.
-      - --set-secrets=DATABASE_URL=voyage-db-web-url:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest
+      - --set-secrets=DATABASE_URL=voyage-db-web-url:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest,DEMO_ADMIN_TOKEN=demo-admin-token:latest
+      # The availability CSV uploads bucket, from `scripts/gcp-setup.sh imports`.
+      - --set-env-vars=IMPORT_BUCKET=tern-floe-imports
       - --min-instances=0
       - --max-instances=2
       # Public access is granted once by `scripts/gcp-setup.sh public`, so this

@@ -1,12 +1,12 @@
 "use server";
 
-import { headers } from "next/headers";
+import { clientIp } from "@/lib/client-ip";
 import { createBrief, getBrief, logShortlist, saveBrief, type ShortlistLog } from "@/db/briefs";
 import type { Db } from "@/db/db";
 import { listActivities } from "@/db/catalogue";
 import { getDb } from "@/db/connection";
 import { consumeClaudeCalls, type RateLimitResult } from "@/db/rate-limit";
-import { exclusionCounts, searchDepartures } from "@/db/search";
+import { exclusionCounts, isoToday, searchDepartures } from "@/db/search";
 import { extractBrief } from "@/claude/extract";
 import { rankShortlist } from "@/claude/rank";
 import { ClaudeCallError, type ClaudeFailureKind } from "@/claude/errors";
@@ -45,15 +45,6 @@ function rateLimitMessage(result: Extract<RateLimitResult, { ok: false }>): stri
   return result.scope === "ip"
     ? `This demo allows 30 Claude calls an hour from one address. Try again in ${minutes} minutes.`
     : `The demo has reached its hourly limit for everyone. Try again in ${minutes} minutes.`;
-}
-
-/**
- * The caller's address. Cloud Run's front end appends the connecting address
- * to X-Forwarded-For, so the last entry is the one a client can't forge.
- */
-async function clientIp(): Promise<string> {
-  const forwarded = (await headers()).get("x-forwarded-for");
-  return forwarded?.split(",").at(-1)?.trim() || "unknown";
 }
 
 /**
@@ -118,7 +109,8 @@ export async function runShortlistAction(
     const limit = await consumeClaudeCalls(db, await clientIp());
     if (!limit.ok) return { status: "error", message: rateLimitMessage(limit) };
 
-    const search = await searchDepartures(db, brief.rules);
+    const today = isoToday();
+    const search = await searchDepartures(db, brief.rules, { today });
     const candidateIds = search.candidates.map((c) => c.departureId);
     const nothingClose = search.candidates.length === 0 && search.nearMisses.length === 0;
     const briefId = await createBrief(db, rawNotes, brief);
@@ -146,7 +138,7 @@ export async function runShortlistAction(
       brief,
       shortlist,
       candidateCount: search.candidates.length,
-      exclusions: nothingClose ? await exclusionCounts(db, brief.rules) : [],
+      exclusions: nothingClose ? await exclusionCounts(db, brief.rules, { today }) : [],
       availabilityAsOf: availabilityAsOf(shortlist),
       saved: false,
     };
@@ -165,7 +157,7 @@ export async function saveBriefAction(briefId: string): Promise<SaveBriefState> 
     const db = await getDb();
     const stored = await getBrief(db, briefId);
     if (!stored) return { status: "error", message: "That brief no longer exists." };
-    const { candidates } = await searchDepartures(db, stored.brief.rules);
+    const { candidates } = await searchDepartures(db, stored.brief.rules, { today: isoToday() });
     const savedAt = await saveBrief(
       db,
       stored.id,

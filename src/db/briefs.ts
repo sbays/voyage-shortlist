@@ -85,14 +85,52 @@ export async function saveBrief(
       [id],
     );
     if (!updated) return null;
-    await tx.query(
-      `INSERT INTO brief_known_departures (brief_id, departure_id)
-       SELECT $1, d.id FROM departures d WHERE d.id = ANY($2::text[])
-       ON CONFLICT DO NOTHING`,
-      [id, candidateIds],
-    );
+    await recordKnownDepartures(tx, id, candidateIds);
     return iso(updated.saved_at);
   });
+}
+
+/**
+ * Records departures as already known to a brief, so the nightly job never
+ * reports them as new. Unknown departure IDs are ignored.
+ */
+export async function recordKnownDepartures(
+  db: Db,
+  briefId: string,
+  departureIds: string[],
+): Promise<void> {
+  await db.query(
+    `INSERT INTO brief_known_departures (brief_id, departure_id)
+     SELECT $1, d.id FROM departures d WHERE d.id = ANY($2::text[])
+     ON CONFLICT DO NOTHING`,
+    [briefId, departureIds],
+  );
+}
+
+export interface SavedBriefsForJobs {
+  briefs: StoredBrief[];
+  /** Saved briefs whose stored criteria no longer parse, with the reason. */
+  unreadable: { id: string; error: string }[];
+}
+
+/**
+ * Saved briefs for the background jobs. Unlike listSavedBriefs, a brief that
+ * no longer parses (after a schema change, say) is reported and skipped
+ * rather than failing the whole job.
+ */
+export async function listSavedBriefsForJobs(db: Db): Promise<SavedBriefsForJobs> {
+  const rows = await db.query<BriefRow>(
+    "SELECT * FROM briefs WHERE saved ORDER BY saved_at DESC, id",
+  );
+  const result: SavedBriefsForJobs = { briefs: [], unreadable: [] };
+  for (const row of rows) {
+    try {
+      result.briefs.push(toStoredBrief(row));
+    } catch (error) {
+      result.unreadable.push({ id: row.id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return result;
 }
 
 /** Saved briefs, most recently saved first. */

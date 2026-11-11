@@ -4,6 +4,7 @@ import { connection } from "next/server";
 import { Suspense } from "react";
 import { listDepartures } from "@/db/catalogue";
 import { getDb } from "@/db/connection";
+import { isoToday } from "@/db/search";
 import { formatDate, formatTimestamp } from "@/lib/dates";
 import { formatGbp } from "@/lib/money";
 import { routeLabel } from "@/lib/routes";
@@ -35,7 +36,8 @@ export default function DeparturesPage() {
 // Availability changes, so this always reads the database at request time.
 async function DepartureTable() {
   await connection();
-  const departures = await listDepartures(await getDb());
+  // Departures that have already sailed are left out.
+  const departures = await listDepartures(await getDb(), { today: isoToday() });
 
   if (departures.length === 0) {
     return <p className={styles.loading}>No departures yet. Run the seed to load the catalogue.</p>;

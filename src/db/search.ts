@@ -54,6 +54,13 @@ export interface NearMiss extends DepartureSummary {
   distance: number;
   /** The closest fare: the one that breaks only this rule. */
   fare: FareOption;
+  /**
+   * For `activity_places_short`, the must-have activity with the biggest
+   * shortfall ("Sea kayaking"); null or absent for every other rule.
+   * Optional so near misses built elsewhere (fixtures, stored shortlists
+   * from before this field existed) stay valid.
+   */
+  shortActivity?: string | null;
 }
 
 export interface SearchResult {
@@ -96,6 +103,7 @@ interface ScoredRow {
   days_outside: number;
   berths_short: number;
   places_short: number;
+  short_activity: string | null;
   solo_missing: boolean;
 }
 
@@ -107,17 +115,26 @@ WITH params AS (
   SELECT $1::date AS ws, $2::date AS we, $3::int AS budget, $4::int AS party,
          $5::text AS solo,
          -- Distinct, so a repeated ID can't demand more activities than exist.
-         ARRAY(SELECT DISTINCT unnest($6::text[])) AS acts
+         ARRAY(SELECT DISTINCT unnest($6::text[])) AS acts,
+         -- Departures that sailed before this date are left out entirely.
+         -- Null (tests, the evaluation) keeps every departure.
+         $7::date AS today
 ),
 must AS (
   SELECT d.id AS departure_id,
          count(da.activity_id)::int AS offered,
          coalesce(sum(da.price_gbp), 0)::int AS activity_pp,
-         greatest(coalesce(max(p.party - da.places_left), 0), 0)::int AS places_short
+         greatest(coalesce(max(p.party - da.places_left), 0), 0)::int AS places_short,
+         -- The must-have with the biggest shortfall, ties by name; null when
+         -- every must-have has enough places.
+         (array_agg(a.name ORDER BY p.party - da.places_left DESC, a.name)
+            FILTER (WHERE p.party > da.places_left))[1] AS short_activity
   FROM departures d
   CROSS JOIN params p
   LEFT JOIN departure_activities da
     ON da.departure_id = d.id AND da.activity_id = ANY (p.acts)
+  LEFT JOIN activities a ON a.id = da.activity_id
+  WHERE p.today IS NULL OR d.start_date >= p.today
   GROUP BY d.id
 ),
 options AS (
@@ -162,7 +179,7 @@ scored AS (
          greatest(o.fare_pp + m.activity_pp - p.budget, 0) AS over_budget,
          greatest(p.ws - d.start_date, d.end_date - p.we, 0) AS days_outside,
          greatest(o.berths_needed - f.berths_left, 0) AS berths_short,
-         m.places_short
+         m.places_short, m.short_activity
   FROM options o
   JOIN departure_fares f
     ON f.departure_id = o.departure_id AND f.cabin_category_id = o.cabin_category_id
@@ -179,7 +196,8 @@ SELECT s.departure_id, v.name AS voyage_name, v.route::text AS route, v.nights,
                'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS availability_updated_at,
        s.cabin_category_id, c.name AS cabin_name, c.sleeps, s.booking,
        s.fare_pp, s.total_pp, s.berths_left,
-       s.over_budget, s.days_outside, s.berths_short, s.places_short, s.solo_missing
+       s.over_budget, s.days_outside, s.berths_short, s.places_short, s.short_activity,
+       s.solo_missing
 FROM scored s
 JOIN departures d ON d.id = s.departure_id
 JOIN voyages v ON v.id = d.voyage_id
@@ -246,15 +264,34 @@ function fare(row: ScoredRow): FareOption {
 /**
  * Candidates (in start-date order) and the closest near misses for a brief.
  */
-export async function searchDepartures(db: Db, rules: HardRules): Promise<SearchResult> {
-  const rows = await db.query<ScoredRow>(SCORE_SQL, [
+export interface SearchOptions {
+  /** ISO date: departures starting before it have sailed and are left out. */
+  today?: string;
+}
+
+/** Today's date in UTC as an ISO date, for SearchOptions.today. */
+export function isoToday(now = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+function searchParams(rules: HardRules, options: SearchOptions): unknown[] {
+  return [
     rules.windowStart,
     rules.windowEnd,
     rules.budgetPerPersonGbp,
     rules.partySize,
     rules.soloPreference,
     rules.mustHaveActivityIds,
-  ]);
+    options.today ?? null,
+  ];
+}
+
+export async function searchDepartures(
+  db: Db,
+  rules: HardRules,
+  options: SearchOptions = {},
+): Promise<SearchResult> {
+  const rows = await db.query<ScoredRow>(SCORE_SQL, searchParams(rules, options));
 
   const candidates = new Map<string, Candidate>();
   for (const row of rows) {
@@ -291,7 +328,13 @@ function pickNearMisses(rows: ScoredRow[], candidates: Map<string, Candidate>): 
       distance < current.distance ||
       (distance === current.distance && row.total_pp < current.fare.totalPerPersonGbp)
     ) {
-      closest.set(key, { ...summary(row), rule, distance, fare: fare(row) });
+      closest.set(key, {
+        ...summary(row),
+        rule,
+        distance,
+        fare: fare(row),
+        shortActivity: rule === "activity_places_short" ? row.short_activity : null,
+      });
     }
   }
 
@@ -384,15 +427,15 @@ const EXCLUSION_ORDER: ExclusionRule[] = ["activity_not_offered", ...RULE_ORDER]
  * that exclude none. For the "nothing fits" message, when a brief has no
  * candidates and no near misses.
  */
-export async function exclusionCounts(db: Db, rules: HardRules): Promise<ExclusionCount[]> {
-  const [row] = await db.query<Record<ExclusionRule, number>>(EXCLUSIONS_SQL, [
-    rules.windowStart,
-    rules.windowEnd,
-    rules.budgetPerPersonGbp,
-    rules.partySize,
-    rules.soloPreference,
-    rules.mustHaveActivityIds,
-  ]);
+export async function exclusionCounts(
+  db: Db,
+  rules: HardRules,
+  options: SearchOptions = {},
+): Promise<ExclusionCount[]> {
+  const [row] = await db.query<Record<ExclusionRule, number>>(
+    EXCLUSIONS_SQL,
+    searchParams(rules, options),
+  );
   return EXCLUSION_ORDER.map((rule) => ({ rule, departures: row[rule] }))
     .filter((c) => c.departures > 0)
     .sort((a, b) => b.departures - a.departures);

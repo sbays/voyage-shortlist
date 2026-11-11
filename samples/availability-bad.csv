@@ -1,0 +1,5 @@
+departure_id,cabin_category_id,price_gbp_pp,solo_price_gbp,berths_left,updated_at
+dep_078,cab_storm_petrel_balcony,16600,26550,4,2026-11-11T22:00:00Z
+
+dep_999,cab_storm_petrel_twin_window,13550,,2,2026-11-11T22:00:00Z
+dep_078,cab_storm_petrel_triple,9800,,-2,2026-11-11T22:00:00Z

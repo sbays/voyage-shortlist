@@ -19,6 +19,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
     "@electric-sql/pglite": "^0.5.16",
+    "@google-cloud/storage": "^8.4.0",
     "next": "16.4.6",
     "pg": "^8.23.1",
     "react": "19.3.0",

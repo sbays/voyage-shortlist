@@ -2,8 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "./db.ts";
 import { migrate } from "./migrate.ts";
 import { createPgliteDb } from "./pglite.ts";
-import { seed } from "./seed.ts";
-import { EDGE_CASES } from "./seed-data.ts";
+import { Brief } from "../domain/brief.ts";
+import { addYears } from "../domain/season.ts";
+import { createBrief, getBrief, saveBrief } from "./briefs.ts";
+import { searchDepartures } from "./search.ts";
+import { seasonDepartures, seed } from "./seed.ts";
+import { departures, EDGE_CASES } from "./seed-data.ts";
 
 const TABLES = [
   "operators",
@@ -231,5 +235,87 @@ describe("edge cases", () => {
     const past = await departureOf(EDGE_CASES.runsPastCompanion);
     expect(past.start_date >= "2027-01-01" && past.end_date <= "2027-01-15").toBe(true);
     expect((await faresOf(EDGE_CASES.runsPastCompanion)).some((f) => f.price_gbp_pp <= 16000 && f.berths_left >= 2)).toBe(true);
+  });
+});
+
+describe("rolling season", () => {
+  it("moves dates by whole years to the current season, keeping IDs and Christmas", async () => {
+    const base = seasonDepartures();
+    const later = seasonDepartures(new Date("2028-06-01T12:00:00Z"));
+
+    expect(later.map((d) => d.id)).toEqual(base.map((d) => d.id));
+    for (const [i, d] of later.entries()) {
+      expect(d.start_date).toBe(addYears(base[i].start_date, 2));
+      expect(d.end_date).toBe(addYears(base[i].end_date, 2));
+    }
+    expect(later.some((d) => d.start_date <= "2028-12-25" && d.end_date >= "2028-12-25")).toBe(true);
+  });
+
+  it("dates availability relative to when the seed ran", () => {
+    const now = new Date("2027-11-01T09:00:00Z");
+    for (const d of seasonDepartures(now)) {
+      const age = now.getTime() - Date.parse(d.availability_updated_at);
+      expect(age).toBeGreaterThanOrEqual(0);
+      expect(age).toBeLessThanOrEqual(14 * 24 * 60 * 60 * 1000);
+    }
+  });
+
+  it("is the generated catalogue unchanged when no date is given", () => {
+    expect(seasonDepartures()).toBe(departures);
+  });
+});
+
+describe("reseeding with saved briefs", () => {
+  it("records each saved brief's candidates as known again, so none come back as new", async () => {
+    const brief = Brief.parse({
+      rules: { windowStart: "2026-12-10", windowEnd: "2026-12-28", budgetPerPersonGbp: 12_000, partySize: 2 },
+    });
+    const savedId = await createBrief(db, "", brief);
+    const { candidates } = await searchDepartures(db, brief.rules);
+    await saveBrief(db, savedId, candidates.map((c) => c.departureId));
+    const unsavedId = await createBrief(db, "", brief);
+    await db.query("INSERT INTO matches (brief_id, departure_id) VALUES ($1, $2)", [savedId, candidates[0].departureId]);
+
+    await seed(db);
+
+    expect(await getBrief(db, savedId)).toMatchObject({ saved: true });
+    const known = await db.query<{ brief_id: string; departure_id: string }>(
+      "SELECT brief_id, departure_id FROM brief_known_departures ORDER BY departure_id",
+    );
+    expect(known.filter((k) => k.brief_id === savedId).map((k) => k.departure_id)).toEqual(
+      candidates.map((c) => c.departureId).sort(),
+    );
+    expect(known.some((k) => k.brief_id === unsavedId)).toBe(false);
+    // Departure IDs are stable across seeds, so the brief's match survives.
+    expect(await db.query("SELECT 1 FROM matches WHERE brief_id = $1", [savedId])).toHaveLength(1);
+  });
+});
+
+describe("reseeding keeps a brief's history", () => {
+  it("keeps a known departure that isn't a candidate at reseed time, so it never comes back as new", async () => {
+    await seed(db);
+    const brief = Brief.parse({
+      rules: { windowStart: "2026-12-10", windowEnd: "2026-12-28", budgetPerPersonGbp: 12_000, partySize: 2 },
+    });
+    const id = await createBrief(db, "", brief);
+    // Seen earlier, when it had berths; sold out in the seed data now.
+    await saveBrief(db, id, [EDGE_CASES.soldOutFavourite]);
+
+    await seed(db);
+
+    const known = await db.query<{ departure_id: string }>(
+      "SELECT departure_id FROM brief_known_departures WHERE brief_id = $1",
+      [id],
+    );
+    expect(known.map((k) => k.departure_id)).toContain(EDGE_CASES.soldOutFavourite);
+  });
+
+  it("still reseeds when a saved brief no longer parses", async () => {
+    await db.query(
+      `INSERT INTO briefs (raw_notes, criteria, saved, saved_at) VALUES ('', '{"rules": {}}', true, now())`,
+    );
+    await expect(seed(db)).resolves.toBeUndefined();
+    const [{ n }] = await db.query<{ n: number }>("SELECT count(*)::int AS n FROM departures");
+    expect(n).toBe(departures.length);
   });
 });

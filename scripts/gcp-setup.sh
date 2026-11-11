@@ -116,26 +116,47 @@ connect() {
 }
 
 narrow_agent_secret_access() {
-  local stage token_version secret agent
+  local stage token_version secret location="" agent admins
   stage=$(g builds connections describe "$CONNECTION" --region="$REGION" \
     --format='value(installationState.stage)')
   [[ "$stage" == "COMPLETE" ]] ||
     { echo "Connection is ${stage:-missing}, not COMPLETE. Finish: bash scripts/gcp-setup.sh connect"; exit 1; }
 
-  # e.g. projects/123/secrets/github-github-oauthtoken-abc123/versions/1
+  # Global:   projects/123/secrets/github-github-oauthtoken-abc123/versions/1
+  # Regional: projects/123/locations/europe-west2/secrets/.../versions/1
   token_version=$(g builds connections describe "$CONNECTION" --region="$REGION" \
     --format='value(githubConfig.authorizerCredential.oauthTokenSecretVersion)')
+  echo "token secret version: ${token_version}"
   secret=$(sed -E 's|.*/secrets/([^/]+)/versions/.*|\1|' <<<"$token_version")
   [[ -n "$secret" && "$secret" != "$token_version" ]] ||
     { echo "Couldn't find the GitHub token secret on the connection."; exit 1; }
+  if [[ "$token_version" == */locations/*/secrets/* ]]; then
+    location=$(sed -E 's|.*/locations/([^/]+)/secrets/.*|\1|' <<<"$token_version")
+    [[ "$location" == "global" ]] && location=""
+  fi
+  if [[ -n "$location" ]]; then
+    # Regional secrets are served by the regional Secret Manager endpoint, and
+    # the global endpoint rejects their names (seen with gcloud 501). The
+    # override is applied to every regional secret and only for this function.
+    local -x CLOUDSDK_API_ENDPOINT_OVERRIDES_SECRETMANAGER="https://secretmanager.${location}.rep.googleapis.com/"
+  fi
   agent=$(cloudbuild_agent)
 
-  say "Narrowing the Cloud Build agent to read-only access on secret ${secret}"
-  g secrets add-iam-policy-binding "$secret" --member="$agent" \
-    --role=roles/secretmanager.secretAccessor >/dev/null
-  g projects remove-iam-policy-binding "$PROJECT" --member="$agent" \
-    --role=roles/secretmanager.admin --condition=None >/dev/null 2>&1 ||
+  say "Narrowing the Cloud Build agent to read-only access on secret ${secret}${location:+ (${location})}"
+  g secrets add-iam-policy-binding "$secret" ${location:+--location="$location"} \
+    --member="$agent" --role=roles/secretmanager.secretAccessor >/dev/null
+
+  # Remove the temporary project-wide role only if it's there, and let any
+  # real failure stop the script rather than report a false "done".
+  admins=$(g projects get-iam-policy "$PROJECT" --flatten="bindings[]" \
+    --filter="bindings.role=roles/secretmanager.admin" --format='value(bindings.members)')
+  if grep -qF "$agent" <<<"$admins"; then
+    g projects remove-iam-policy-binding "$PROJECT" --member="$agent" \
+      --role=roles/secretmanager.admin --condition=None >/dev/null
+    echo "removed project-wide secretmanager.admin"
+  else
     echo "project-wide secretmanager.admin already removed"
+  fi
   echo "done: the agent can no longer read other secrets, such as the Anthropic key"
 }
 

@@ -2,12 +2,13 @@ import type { Candidate, FareOption, NearMiss } from "../db/search.ts";
 import { formatDate, formatTimestamp } from "../lib/dates.ts";
 import { formatGbp } from "../lib/money.ts";
 import { PLACEHOLDER_FIELDS, type PlaceholderField } from "../domain/shortlist.ts";
+import { SPECIALIST_NAME } from "../domain/specialist-name.ts";
 
 // The email draft names facts only as placeholders, such as
 // {{departure:dep_014.price}}. The server fills them from the database, so a
 // price or date in the email can never be one the model wrote.
 
-export const SPECIALIST_NAME = "{{specialist_name}}";
+export { SPECIALIST_NAME };
 
 export type Placeholder =
   | { kind: "departure"; raw: string; departureId: string; field: PlaceholderField }

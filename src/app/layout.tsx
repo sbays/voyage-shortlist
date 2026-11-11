@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { DemoBanner } from "./demo-banner";
+import { SiteNav } from "./nav";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,6 +15,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html lang="en-GB">
       <body>
         <DemoBanner />
+        <SiteNav />
         {children}
       </body>
     </html>

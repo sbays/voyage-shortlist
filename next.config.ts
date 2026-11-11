@@ -5,6 +5,10 @@ const nextConfig: NextConfig = {
   output: "standalone",
   cacheComponents: true,
   partialPrefetching: true,
+  // PGlite (local dev only) loads its WebAssembly and data files relative to
+  // its own module. Bundled, those URLs point inside .next and fs can't read
+  // them, so it's loaded from node_modules instead. `pg` is external already.
+  serverExternalPackages: ["@electric-sql/pglite"],
 };
 
 export default nextConfig;

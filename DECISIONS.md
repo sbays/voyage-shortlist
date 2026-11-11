@@ -114,6 +114,7 @@ Decisions made while building, in addition to the ones in `plan.md`. Newest at t
 - **Decision:** each stage of work is done on its own branch. Before a PR is created, `/code-review` runs on the stage's changes and every finding is reported to the user, who decides which ones to fix. Then `/pr` writes the PR description, the PR is opened, and merging it to main triggers the deploy. The push-to-main trigger is unchanged: a merge is the push.
 - **Why:** bugs are caught before they reach main, where every push deploys. The user stays in charge of which findings matter. Portfolio reviewers can read the project stage by stage, one PR at a time.
 - **Replaces:** an earlier decision the same day to review before each commit and commit straight to main.
+- **Two reviews (from Phase 3):** `/code-review` and `/mr-review` run side by side, and their findings are compared in one report. In Phase 3 they overlapped on only 3 of 29 findings: `/code-review` found the abuse and correctness problems (unlimited brief inserts, uncapped notes, a false "Saved"), and `/mr-review` found the React, accessibility and bundle problems (heading levels, zod in the client bundle, a stale-state toggle).
 
 ## 2026-11-11: checks on every PR, run by an account that can't deploy
 
@@ -171,6 +172,19 @@ Decisions made while building, in addition to the ones in `plan.md`. Newest at t
 - **Known conflict:** the `solo-own-cabin` case expects "late Nov" to start on 15 November, not the 20th, because the expected departure leaves on the 16th. The case stays as written: it shows a specialist widening the window, and moving it would drop the departure it expects.
 - **Result:** windows went from 3 of 10 exact to 7 exact and 2 close, with ranking unchanged at 10 of 10 in the top 3.
 
+## 2026-11-11: Phase 3 server actions and tables
+
+- **Decision:** three server actions in `src/app/actions.ts`: extract the brief, run the shortlist, save a brief. The brief is stored only when the specialist runs the shortlist, after the form validates (`parseBriefForm`), and every run is logged to `shortlists` with its summed usage, including failed runs. Saving a brief re-runs the search on the stored brief rather than taking candidate IDs from the browser. The rate limit counts one per extraction and one per shortlist run (a retry inside a ranking isn't counted twice) and is checked before anything is stored. A run with nothing to rank makes no Claude call but still counts, because every run stores a brief and the limit is what caps those writes. Any failure, including the database being down, comes back as an error state so the form keeps its values; `src/app/error.tsx` is the fallback. Only saved briefs have a page at `/briefs/[id]`. Limits are fixed one-hour windows in Postgres keyed by a hash of the address, so they hold across instances and no raw IP is stored. The address is the last `X-Forwarded-For` entry, the one Cloud Run's front end adds.
+- **Dynamic routes:** `/` (the actions), `/briefs` and `/briefs/[id]` read the database at request time, with `await connection()` inside `<Suspense>`. The site nav is in `<Suspense>` too, because `usePathname` reads an unknown param on `/briefs/[id]`.
+- **Why:** each action is a public POST endpoint, so each validates its own input and trusts no IDs from the client. Counting in Postgres avoids adding Redis for a demo.
+
+## 2026-11-11: PGlite isn't bundled
+
+- **Decision:** `next.config.ts` lists `@electric-sql/pglite` in `serverExternalPackages`, so the dev server loads it from `node_modules`.
+- **Why:** bundled by Turbopack, PGlite resolves its WebAssembly and data files to URLs inside `.next` that `fs` can't read, and every server action failed locally. Production uses `pg` and never loads PGlite.
+
 ## Open
 
-- Nothing open.
+- **Check the address the rate limit reads, after the Phase 3 deploy.** The per-visitor limit takes the last `X-Forwarded-For` entry, assuming Cloud Run's front end appends the real visitor's address. This hasn't been checked. If the last entry is a Google server instead, every visitor shares one 30-call allowance. Log the header once on the live site and confirm the last entry is your own address, then fix `clientIp` in `src/app/actions.ts` if not.
+- **Name the activity in an activity-places near miss.** It reads "1 activity place short" because `NearMiss` doesn't say which must-have activity is short. Add the activity name to the search result and use it in `src/app/shortlist/format.ts`.
+- **Decide what a reseed does to saved briefs, before Phase 4.** `seed()` empties `departures` with `TRUNCATE ... CASCADE`, which also empties `brief_known_departures` and `matches` (both reference departures) but keeps the saved briefs. After a reseed the nightly job would report every departure that fits a saved brief as a new match. Either reset saved briefs too (what the planned weekly reset says), or rebuild each saved brief's known departures after seeding. Add a test either way.

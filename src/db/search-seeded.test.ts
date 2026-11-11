@@ -3,7 +3,7 @@ import { HardRules } from "../domain/brief.ts";
 import type { Db } from "./db.ts";
 import { migrate } from "./migrate.ts";
 import { createPgliteDb } from "./pglite.ts";
-import { searchDepartures, type SearchResult } from "./search.ts";
+import { exclusionCounts, searchDepartures, type SearchResult } from "./search.ts";
 import { EDGE_CASES } from "./seed-data.ts";
 import { seed } from "./seed.ts";
 
@@ -137,5 +137,46 @@ describe("seeded edge cases", () => {
         expect(f.berthsLeft).toBeGreaterThanOrEqual(2);
       }
     }
+  });
+});
+
+describe("exclusionCounts", () => {
+  it("names the rule that excludes the most departures when nothing is close", async () => {
+    const rules = HardRules.parse({
+      windowStart: "2026-06-01",
+      windowEnd: "2026-06-10",
+      budgetPerPersonGbp: 500,
+      partySize: 2,
+      mustHaveActivityIds: ["act_kayak"],
+    });
+    const result = await searchDepartures(db, rules);
+    expect(result).toEqual({ candidates: [], nearMisses: [] });
+
+    const counts = await exclusionCounts(db, rules);
+    const [{ count }] = await db.query<{ count: number }>("SELECT count(*)::int AS count FROM departures");
+    // Every departure is out of season and over budget; budget comes first on a tie.
+    expect(counts.slice(0, 2)).toEqual([
+      { rule: "over_budget", departures: count },
+      { rule: "outside_window", departures: count },
+    ]);
+    expect(counts.map((c) => c.rule)).toContain("activity_not_offered");
+    const sizes = counts.map((c) => c.departures);
+    expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
+    expect(counts.every((c) => c.departures > 0)).toBe(true);
+  });
+
+  it("counts own-cabin requests against departures with no solo price", async () => {
+    const counts = await exclusionCounts(
+      db,
+      HardRules.parse({
+        windowStart: "2026-11-01",
+        windowEnd: "2027-03-31",
+        budgetPerPersonGbp: 100_000,
+        partySize: 1,
+        soloPreference: "own_cabin",
+      }),
+    );
+    expect(counts.find((c) => c.rule === "over_budget")).toBeUndefined();
+    expect(counts.find((c) => c.rule === "no_solo_price")?.departures).toBeGreaterThan(0);
   });
 });

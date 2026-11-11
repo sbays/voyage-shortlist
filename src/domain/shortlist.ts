@@ -1,12 +1,12 @@
 import { z } from "zod";
 import type { Candidate, NearMiss } from "../db/search.ts";
+import { MAX_RANKED_CANDIDATES } from "./limits.ts";
 
 // "Rank and explain": what goes in, what Claude returns, and what the server
 // renders after checking every ID. Prices, dates and ship names on screen
 // always come from Candidate and NearMiss (the database), never from model text.
 
-/** At most this many candidates go to the ranking call, earliest first. */
-export const MAX_RANKED_CANDIDATES = 20;
+export { MAX_RANKED_CANDIDATES };
 export const MAX_PICKS = 3;
 
 /** Structured-outputs schema: no ranges or lengths; counts are checked in code. */
@@ -62,4 +62,13 @@ export interface Shortlist {
   emailBody: string;
   /** Candidates that qualified but weren't sent to ranking (over MAX_RANKED_CANDIDATES). */
   unrankedCount: number;
+}
+
+/** "Availability as of": the oldest timestamp among the departures shown. */
+export function availabilityAsOf(shortlist: Shortlist): string | null {
+  const stamps = [
+    ...shortlist.picks.map((p) => p.candidate.availabilityUpdatedAt),
+    ...shortlist.nearMisses.map((n) => n.nearMiss.availabilityUpdatedAt),
+  ].sort();
+  return stamps[0] ?? null;
 }

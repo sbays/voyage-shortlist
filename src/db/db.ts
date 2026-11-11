@@ -6,7 +6,7 @@
 export type Row = Record<string, unknown>;
 
 export interface Db {
-  query<T extends Row = Row>(sql: string, params?: unknown[]): Promise<T[]>;
+  query<T extends object = Row>(sql: string, params?: unknown[]): Promise<T[]>;
   /** Runs one or more statements with no parameters, such as a migration. */
   exec(sql: string): Promise<void>;
   /** Runs `fn` in a transaction, rolling back if it throws. */

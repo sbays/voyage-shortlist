@@ -9,7 +9,7 @@ interface PgliteLike {
 
 function queries(client: PgliteLike): Queries {
   return {
-    async query<T extends Row = Row>(sql: string, params: unknown[] = []) {
+    async query<T extends object = Row>(sql: string, params: unknown[] = []) {
       return (await client.query<T>(sql, params)).rows;
     },
     async exec(sql: string) {

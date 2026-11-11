@@ -97,13 +97,12 @@ interface ScoredRow {
   berths_short: number;
   places_short: number;
   solo_missing: boolean;
-  [key: string]: unknown;
 }
 
 // Rows breaking two or more rules are dropped in SQL. Departures that don't
 // offer every must-have activity at all are excluded, not near misses: only a
 // shortage of places on an offered activity counts as close.
-const SCORE_SQL = `
+const OPTION_CTES = `
 WITH params AS (
   SELECT $1::date AS ws, $2::date AS we, $3::int AS budget, $4::int AS party,
          $5::text AS solo,
@@ -153,7 +152,9 @@ options AS (
   JOIN cabin_categories c ON c.id = f.cabin_category_id
   CROSS JOIN params p
   WHERE p.party = 1 AND p.solo = 'own_cabin' AND f.solo_price_gbp IS NULL AND c.sleeps >= 2
-),
+)`;
+
+const SCORE_SQL = `${OPTION_CTES},
 scored AS (
   SELECT o.departure_id, o.cabin_category_id, o.booking, o.fare_pp, o.solo_missing,
          f.berths_left,
@@ -337,4 +338,62 @@ function pickNearMisses(rows: ScoredRow[], candidates: Map<string, Candidate>): 
     }
   }
   return picked;
+}
+
+/** Why departures were excluded: the near-miss rules plus a missing must-have activity. */
+export type ExclusionRule = NearMissRule | "activity_not_offered";
+
+export interface ExclusionCount {
+  rule: ExclusionRule;
+  /** Departures that break this rule, whatever else they break. */
+  departures: number;
+}
+
+// Departure level, not fare level: a departure breaks a rule when none of
+// its booking options meets it. A departure breaking several rules counts
+// under each, so the counts can add up to more than the catalogue.
+const EXCLUSIONS_SQL = `${OPTION_CTES},
+opt AS (
+  SELECT o.departure_id, o.solo_missing,
+         o.fare_pp + m.activity_pp AS total_pp,
+         o.berths_needed <= f.berths_left AS has_berths
+  FROM options o
+  JOIN departure_fares f
+    ON f.departure_id = o.departure_id AND f.cabin_category_id = o.cabin_category_id
+  JOIN must m ON m.departure_id = o.departure_id
+)
+SELECT
+  count(*) FILTER (WHERE m.offered < cardinality(p.acts))::int AS activity_not_offered,
+  count(*) FILTER (WHERE NOT EXISTS (
+    SELECT 1 FROM opt WHERE opt.departure_id = d.id AND opt.total_pp <= p.budget))::int AS over_budget,
+  count(*) FILTER (WHERE d.start_date < p.ws OR d.end_date > p.we)::int AS outside_window,
+  count(*) FILTER (WHERE NOT EXISTS (
+    SELECT 1 FROM opt WHERE opt.departure_id = d.id AND opt.has_berths))::int AS berths_short,
+  count(*) FILTER (WHERE m.places_short > 0)::int AS activity_places_short,
+  count(*) FILTER (WHERE p.party = 1 AND p.solo = 'own_cabin' AND NOT EXISTS (
+    SELECT 1 FROM opt WHERE opt.departure_id = d.id AND NOT opt.solo_missing))::int AS no_solo_price
+FROM departures d
+JOIN must m ON m.departure_id = d.id
+CROSS JOIN params p
+`;
+
+const EXCLUSION_ORDER: ExclusionRule[] = ["activity_not_offered", ...RULE_ORDER];
+
+/**
+ * How many departures each hard rule excludes, most first, leaving out rules
+ * that exclude none. For the "nothing fits" message, when a brief has no
+ * candidates and no near misses.
+ */
+export async function exclusionCounts(db: Db, rules: HardRules): Promise<ExclusionCount[]> {
+  const [row] = await db.query<Record<ExclusionRule, number>>(EXCLUSIONS_SQL, [
+    rules.windowStart,
+    rules.windowEnd,
+    rules.budgetPerPersonGbp,
+    rules.partySize,
+    rules.soloPreference,
+    rules.mustHaveActivityIds,
+  ]);
+  return EXCLUSION_ORDER.map((rule) => ({ rule, departures: row[rule] }))
+    .filter((c) => c.departures > 0)
+    .sort((a, b) => b.departures - a.departures);
 }

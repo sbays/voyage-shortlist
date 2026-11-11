@@ -113,8 +113,8 @@ Each phase ends with the app deployed and working on Cloud Run, so Phase 0 sets 
 
 **Branch and PR per stage:** every stage of work happens on its own branch, never directly on main.
 
-1. Run `/code-review` against the stage's changes.
-2. Report every finding to the user explicitly, before any PR is created.
+1. Run `/code-review` and `/mr-review` against the stage's changes, in parallel in the background. `/code-review` tends to find correctness, security and abuse problems; `/mr-review` tends to find React, accessibility, bundle and maintainability problems. When the work isn't committed yet, point `/mr-review` at the working tree, since its diff commands only see commits.
+2. Label each review's findings separately (for example L1, L2 for `/code-review` and M1, M2 for `/mr-review`), then report them to the user together, before any PR is created: one table per source, findings both reviews raised grouped first, each with its file and line and a recommended verdict (fix or dismiss, with the reason).
 3. The user chooses which findings to fix. Fix those, and note the reason for any that are dismissed.
 4. Write the PR description with `/pr`, then open the PR.
 5. Merging the PR to main triggers the deploy.

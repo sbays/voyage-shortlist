@@ -18,7 +18,6 @@ export interface DepartureListing {
   berthsLeft: number;
   activityNames: string[];
   availabilityUpdatedAt: string;
-  [key: string]: unknown;
 }
 
 /** Every departure in start-date order, with its cheapest available fare. */
@@ -50,7 +49,6 @@ export async function listDepartures(db: Db): Promise<DepartureListing[]> {
 export interface ActivityOption {
   id: string;
   name: string;
-  [key: string]: unknown;
 }
 
 /** The activities a brief can require, for the extraction prompt and the form. */

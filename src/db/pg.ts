@@ -7,7 +7,7 @@ interface Queryable {
 
 function queries(client: Queryable): Queries {
   return {
-    async query<T extends Row = Row>(sql: string, params: unknown[] = []) {
+    async query<T extends object = Row>(sql: string, params: unknown[] = []) {
       return (await client.query(sql, params)).rows as T[];
     },
     async exec(sql: string) {

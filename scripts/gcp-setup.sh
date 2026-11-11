@@ -8,6 +8,7 @@
 #   bash scripts/gcp-setup.sh trigger   # push-to-main trigger, once connect is COMPLETE
 #   bash scripts/gcp-setup.sh public    # after the first deploy: open the demo to everyone
 #   bash scripts/gcp-setup.sh pr-checks # typecheck, lint and test on every PR to main
+#   bash scripts/gcp-setup.sh database  # db job account and the 2 Neon connection secrets
 set -euo pipefail
 
 PROJECT=tern-floe
@@ -21,6 +22,9 @@ BUDGET_GBP=20
 WEB_SA="voyage-web@${PROJECT}.iam.gserviceaccount.com"
 BUILD_SA="voyage-build@${PROJECT}.iam.gserviceaccount.com"
 PR_SA="voyage-pr-checks@${PROJECT}.iam.gserviceaccount.com"
+DB_SA="voyage-db@${PROJECT}.iam.gserviceaccount.com"
+DB_ADMIN_SECRET=voyage-db-admin-url
+DB_WEB_SECRET=voyage-db-web-url
 
 g() { gcloud --project="$PROJECT" --quiet "$@"; }
 say() { printf '\n==> %s\n' "$*"; }
@@ -101,7 +105,7 @@ base() {
   # Lets the build deploy a service that runs as voyage-web, and nothing else.
   g_iam iam service-accounts add-iam-policy-binding "$WEB_SA" \
     --member="serviceAccount:${BUILD_SA}" --role=roles/iam.serviceAccountUser >/dev/null
-  echo "done (voyage-web has no roles yet; Phase 1 adds Cloud SQL access)"
+  echo "done (voyage-web has no project roles; the database step lets it read its one secret)"
 
   say "Budget alert: £${BUDGET_GBP}/month on billing account ${billing}"
   # Captured first: piping gcloud into `grep -q` can SIGPIPE gcloud, and with
@@ -289,8 +293,62 @@ pr_checks() {
   say "PR checks ready. Open a PR to main and note the exact check name GitHub shows; that name is what protect-main should require."
 }
 
+ensure_secret() {
+  local name=$1
+  if g secrets describe "$name" >/dev/null 2>&1; then
+    echo "secret ${name} exists"
+  else
+    g secrets create "$name" --replication-policy=automatic >/dev/null
+    echo "secret ${name} created (no value yet)"
+  fi
+}
+
+# Read access is granted on each secret, never project-wide, so each account
+# reads exactly one: voyage-db the admin string (owns the schema, runs DDL)
+# and voyage-web the web string (rows only).
+database() {
+  say "Database job account"
+  ensure_sa voyage-db "Voyage shortlist: db job (migrate and seed)"
+  # Lets the build deploy and run a job that runs as voyage-db, and nothing else.
+  g_iam iam service-accounts add-iam-policy-binding "$DB_SA" \
+    --member="serviceAccount:${BUILD_SA}" --role=roles/iam.serviceAccountUser >/dev/null
+
+  say "Connection string secrets (global; values are added by hand)"
+  ensure_secret "$DB_ADMIN_SECRET"
+  ensure_secret "$DB_WEB_SECRET"
+  g_iam secrets add-iam-policy-binding "$DB_ADMIN_SECRET" \
+    --member="serviceAccount:${DB_SA}" --role=roles/secretmanager.secretAccessor >/dev/null
+  g_iam secrets add-iam-policy-binding "$DB_WEB_SECRET" \
+    --member="serviceAccount:${WEB_SA}" --role=roles/secretmanager.secretAccessor >/dev/null
+  echo "voyage-db reads ${DB_ADMIN_SECRET}; voyage-web reads ${DB_WEB_SECRET}"
+
+  say "Secret values"
+  local name latest missing=0
+  for name in "$DB_ADMIN_SECRET" "$DB_WEB_SECRET"; do
+    latest=$(g secrets versions list "$name" --filter=state=ENABLED --limit=1 --format='value(name)')
+    if [[ -n "$latest" ]]; then
+      echo "${name}: has a value (version ${latest##*/})"
+    else
+      echo "${name}: no value yet"
+      missing=1
+    fi
+  done
+  if [[ "$missing" == 1 ]]; then
+    echo
+    echo "Add each value from stdin, so it stays out of your shell history. Run one"
+    echo "command, paste the connection string, press Enter, then Ctrl-D:"
+    echo
+    echo "  gcloud secrets versions add ${DB_ADMIN_SECRET} --project=${PROJECT} --data-file=-"
+    echo "  gcloud secrets versions add ${DB_WEB_SECRET} --project=${PROJECT} --data-file=-"
+    echo
+    echo "Then re-run this step to check both show a value."
+  else
+    say "Database setup complete. The next push to main creates and runs the voyage-db job."
+  fi
+}
+
 case "${1:-}" in
-  base | connect | trigger | public) "$1" ;;
+  base | connect | trigger | public | database) "$1" ;;
   pr-checks) pr_checks ;;
-  *) sed -n '5,10p' "$0"; exit 1 ;;
+  *) sed -n '5,11p' "$0"; exit 1 ;;
 esac

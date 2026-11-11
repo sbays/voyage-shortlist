@@ -1,0 +1,80 @@
+.main {
+  width: 100%;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 3rem 1rem 4rem;
+}
+
+.eyebrow {
+  font-size: 0.875rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin-top: 0.5rem;
+  font-size: clamp(1.75rem, 5vw, 2.25rem);
+  line-height: 1.15;
+}
+
+.lede {
+  margin-top: 0.75rem;
+  max-width: 44rem;
+  color: var(--muted);
+}
+
+.loading {
+  margin-top: 2rem;
+  color: var(--muted);
+}
+
+.scroll {
+  margin-top: 2rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface);
+}
+
+.table {
+  width: 100%;
+  min-width: 52rem;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.caption {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+.table th,
+.table td {
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.table th {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.table .number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.detail {
+  display: block;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.nowrap {
+  white-space: nowrap;
+}

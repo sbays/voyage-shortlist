@@ -1,3 +1,4 @@
+import Link from "next/link";
 import styles from "./page.module.css";
 
 export default function Home() {
@@ -10,8 +11,9 @@ export default function Home() {
         Antarctic departures, with reasons, trade-offs and a draft email.
       </p>
       <p className={styles.status}>
-        Under construction: the pipeline is live, and the shortlisting arrives
-        in the next phases.
+        Under construction: the voyage catalogue is in, and the shortlisting
+        arrives in the next phases. Meanwhile, <Link href="/departures">browse
+        the departures</Link>.
       </p>
     </main>
   );

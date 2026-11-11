@@ -28,3 +28,17 @@ export const HardRules = z
   });
 
 export type HardRules = z.infer<typeof HardRules>;
+
+/**
+ * A brief the specialist has checked: the hard rules SQL applies, plus the
+ * soft preferences only the ranking call reads.
+ */
+export const Brief = z.object({
+  rules: HardRules,
+  /** Who is travelling, in the specialist's words: "retired couple, first trip". */
+  partyDescription: z.string().default(""),
+  /** Short phrases: "worried about seasickness", "wants penguin chicks". */
+  softPreferences: z.array(z.string().min(1)).default([]),
+});
+
+export type Brief = z.infer<typeof Brief>;

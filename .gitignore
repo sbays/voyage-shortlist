@@ -48,3 +48,6 @@ next-env.d.ts
 
 # local PGlite database
 /.data
+
+# evaluation run reports
+/evals/results

@@ -1,9 +1,11 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useRef, useState } from "react";
 import { extractBriefAction } from "../actions";
 import { MAX_NOTES_LENGTH, NOTES_FIELD, type ExtractState } from "../action-types";
 import { BriefForm } from "./brief-form";
+import { EXAMPLE_NOTES } from "./example-notes";
+import { ExampleNotesCard } from "./example-notes-card";
 import { isNotesProblem } from "./form-values";
 import styles from "./brief.module.css";
 
@@ -19,6 +21,13 @@ type Extracted = Extract<ExtractState, { status: "ok" }>;
 export function ShortlistBuilder() {
   const [state, extract, pending] = useActionState(extractBriefAction, INITIAL);
   const [notes, setNotes] = useState("");
+  const notesRef = useRef<HTMLTextAreaElement>(null);
+  // The specialist's own notes from before an example replaced them, so they
+  // can be restored. Cleared once they type again.
+  const [ownNotes, setOwnNotes] = useState<string | null>(null);
+  // An error is hidden once an example is loaded, since it was about the
+  // notes that example replaced. A new submit brings a new state object.
+  const [dismissedError, setDismissedError] = useState<ExtractState | null>(null);
   // The brief form comes from the last successful reading, so a failed
   // re-read (or a rate limit) never takes away the specialist's corrections.
   // Each new reading gets a fresh form, keyed by its number.
@@ -31,13 +40,35 @@ export function ShortlistBuilder() {
     }
   }
 
+  // Loading an example moves focus to the box, so keyboard and screen reader
+  // users land on the notes they just loaded and can read or extract them.
+  function pickExample(example: string) {
+    // Only text the specialist wrote is worth restoring, not an earlier example.
+    const isOwn = notes.trim() !== "" && !EXAMPLE_NOTES.some((e) => e.notes === notes);
+    if (isOwn) setOwnNotes(notes);
+    setNotes(example);
+    setDismissedError(state);
+    notesRef.current?.focus();
+  }
+
+  function restoreOwnNotes() {
+    if (ownNotes === null) return;
+    setNotes(ownNotes);
+    setOwnNotes(null);
+    notesRef.current?.focus();
+  }
+
   const hasBrief = latest !== null;
+  const error = state.status === "error" && state !== dismissedError ? state : null;
+  // The notes have changed since the brief below was read from them.
+  const briefOutOfStep = latest !== null && notes.trim() !== latest.reading.notes;
   // Only an empty or over-long box is the notes' fault; a rate limit or a
   // failed call shows the same alert without marking the field invalid.
-  const notesInvalid = state.status === "error" && isNotesProblem(state.notes);
+  const notesInvalid = error !== null && isNotesProblem(error.notes);
 
   return (
     <>
+      <ExampleNotesCard onPick={pickExample} disabled={pending} />
       <form action={extract} className={styles.card} aria-labelledby="notes-heading">
         <h2 id="notes-heading" className={styles.heading}>
           1. Call notes
@@ -51,15 +82,19 @@ export function ShortlistBuilder() {
         </p>
         <textarea
           id="notes"
+          ref={notesRef}
           name={NOTES_FIELD}
           className={styles.textarea}
           rows={8}
           maxLength={MAX_NOTES_LENGTH}
           required
           value={notes}
-          onChange={(e) => setNotes(e.target.value)}
+          onChange={(e) => {
+            setNotes(e.target.value);
+            setOwnNotes(null);
+          }}
           aria-describedby={
-            state.status === "error" ? "notes-hint notes-error" : "notes-hint"
+            error ? "notes-hint notes-error" : "notes-hint"
           }
           aria-invalid={notesInvalid || undefined}
         />
@@ -68,13 +103,26 @@ export function ShortlistBuilder() {
           characters
         </p>
         <div role="alert" id="notes-error" className={styles.alertRegion}>
-          {state.status === "error" ? <p className={styles.error}>{state.message}</p> : null}
+          {error ? <p className={styles.error}>{error.message}</p> : null}
+        </div>
+        <div aria-live="polite" className={styles.status}>
+          {ownNotes !== null ? (
+            <p>
+              An example replaced your notes.{" "}
+              <button type="button" className={styles.link} onClick={restoreOwnNotes}>
+                Restore your notes
+              </button>
+            </p>
+          ) : null}
+          {briefOutOfStep ? (
+            <p>These notes have changed since the brief below was read. Extract the brief again to use them.</p>
+          ) : null}
         </div>
         <div className={styles.actions}>
           <button type="submit" className={styles.primary} disabled={pending}>
             {pending ? "Reading the notes…" : hasBrief ? "Read the notes again" : "Extract the brief"}
           </button>
-          {hasBrief ? (
+          {hasBrief && !briefOutOfStep ? (
             <p className={styles.hint}>Reading them again replaces the brief below.</p>
           ) : null}
         </div>

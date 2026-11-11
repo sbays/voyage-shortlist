@@ -1,24 +1,31 @@
 {
-  "name": "app-tmp",
+  "name": "voyage-shortlist",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "next dev",
+    "dev": "node src/db/cli.ts setup && next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify": "pnpm typecheck && pnpm lint && pnpm test"
+    "verify": "pnpm typecheck && pnpm lint && pnpm test",
+    "db:migrate": "node src/db/cli.ts migrate",
+    "db:seed": "node src/db/cli.ts seed"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.16",
     "next": "16.4.6",
+    "pg": "^8.23.1",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

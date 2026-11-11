@@ -1,12 +1,16 @@
 # Runs on every push to main, through the trigger created by
-# `scripts/gcp-setup.sh trigger`. Checks first, then builds the image into
-# Artifact Registry and deploys it to Cloud Run.
+# `scripts/gcp-setup.sh trigger`. Checks first, then builds the web and db
+# images into Artifact Registry, runs the database migrations as the voyage-db
+# Cloud Run job, and deploys the web service. A failed migration stops the
+# build before the deploy, so the live site keeps its current revision.
 
 substitutions:
   _REGION: europe-west2
   _REPO: voyage-shortlist
   _SERVICE: voyage-shortlist
   _RUNTIME_SA: voyage-web@${PROJECT_ID}.iam.gserviceaccount.com
+  _DB_JOB: voyage-db
+  _DB_SA: voyage-db@${PROJECT_ID}.iam.gserviceaccount.com
 
 options:
   # Required when the trigger runs as a user-managed service account.
@@ -31,17 +35,53 @@ steps:
 
   - id: build-image
     name: gcr.io/cloud-builders/docker
-    args:
-      - build
-      - -t
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}
-      - .
+    args: [build, --target=runtime, -t, "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}", .]
+
+  - id: build-db-image
+    name: gcr.io/cloud-builders/docker
+    args: [build, --target=db, -t, "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/db:${SHORT_SHA}", .]
 
   - id: push-image
     name: gcr.io/cloud-builders/docker
+    args: [push, "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}"]
+
+  - id: push-db-image
+    name: gcr.io/cloud-builders/docker
+    args: [push, "${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/db:${SHORT_SHA}"]
+
+  # Creates the job on the first run and points it at this build's image after
+  # that. The admin connection string is readable only by voyage-db.
+  - id: update-db-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
     args:
-      - push
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}
+      - run
+      - jobs
+      - deploy
+      - ${_DB_JOB}
+      - --project=${PROJECT_ID}
+      - --region=${_REGION}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/db:${SHORT_SHA}
+      - --service-account=${_DB_SA}
+      - --set-secrets=DATABASE_URL=voyage-db-admin-url:latest
+      - --set-env-vars=DB_WEB_ROLE=voyage_web
+      - --args=migrate
+      - --tasks=1
+      - --max-retries=0
+      - --task-timeout=300s
+
+  # --wait makes a failed migration fail this step, and so the build.
+  - id: migrate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - execute
+      - ${_DB_JOB}
+      - --project=${PROJECT_ID}
+      - --region=${_REGION}
+      - --wait
 
   - id: deploy
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
@@ -54,6 +94,8 @@ steps:
       - --region=${_REGION}
       - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}
       - --service-account=${_RUNTIME_SA}
+      # Rows only (no DDL), and readable only by voyage-web.
+      - --set-secrets=DATABASE_URL=voyage-db-web-url:latest
       - --min-instances=0
       - --max-instances=2
       # Public access is granted once by `scripts/gcp-setup.sh public`, so this
@@ -77,3 +119,4 @@ steps:
 
 images:
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/db:${SHORT_SHA}

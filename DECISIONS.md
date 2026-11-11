@@ -126,6 +126,38 @@ Decisions made while building, in addition to the ones in `plan.md`. Newest at t
 - **Decision:** the Vitest config uses the `.mts` extension rather than adding `"type": "module"` to `package.json`.
 - **Why:** Vite 8 warned that its future native config loader would load a `.ts` file as CommonJS. `.mts` fixes that for this one file, without changing how Next.js and ESLint load their configs.
 
+## 2026-11-11: Postgres on Neon's free tier, not Cloud SQL
+
+- **Decision:** the database is a Neon free-tier Postgres 17 project in AWS London, reached with `pg` over TLS. The connection strings live in Secret Manager. This replaces the plan's Cloud SQL with IAM database authentication.
+- **Why:** the smallest Cloud SQL instance costs about £8 a month even when idle, which is a lot for a demo. Neon suspends after a few idle minutes, wakes in under a second and costs nothing at this size. The SQL, migrations and tests are unchanged, since it's still Postgres. The README will explain that a real deployment would use Cloud SQL with IAM database auth through the connector, and Secret Manager still shows how secrets are handled.
+- **Budget:** the £20 alert stays.
+
+## 2026-11-11: PGlite for tests and local dev
+
+- **Decision:** Vitest and `pnpm dev` use PGlite (Postgres compiled to WASM, running in the process) behind a small `Db` interface (`src/db/db.ts`). Only Cloud Run and the db job use `pg`. Locally, with no `DATABASE_URL`, the app migrates a PGlite database in `.data/` and seeds it if it's empty.
+- **Why:** tests need real Postgres, but neither the PR checks build nor the sandbox can run Docker. PGlite needs no service and no cloud credentials. The risk is small differences from Neon, which are acceptable because the queries are plain Postgres.
+- **Dates:** queries select dates as text (`::text`), so neither driver shifts a calendar date through a time zone.
+
+## 2026-11-11: migrations and seed run as a Cloud Run job
+
+- **Decision:** plain SQL files in `src/db/migrations/`, applied in name order by `node src/db/cli.ts migrate`. Each file runs in its own transaction under an advisory lock and is recorded in `schema_migrations`. The `voyage-db` Cloud Run job runs the CLI from a separate `db` image target. Cloud Build runs `migrate` after pushing the images and before deploying, so a failed migration stops the deploy. `seed` is run by hand for now and becomes the weekly reset in Phase 4.
+- **Why:** migrating at app startup could race between the 2 instances. A job is in the planned stack anyway.
+- **No build step:** the CLI runs on Node 24's built-in TypeScript type stripping. That's why `src/db` and `src/domain` import each other with relative `.ts` paths, no `@/` alias, and only erasable syntax (`erasableSyntaxOnly` in `tsconfig.json`).
+
+## 2026-11-11: two database roles
+
+- **Decision:** `voyage_admin` owns the schema and is used only by the db job. `voyage_web` is used by Cloud Run and can only read and write rows. `migrate` grants it `SELECT, INSERT, UPDATE, DELETE` on every table, including future ones through default privileges, but not writes to `schema_migrations`. Each role's connection string is a separate secret, readable only by its own service account (`voyage-db` or `voyage-web`).
+- **Why:** a bug or SQL injection in the web app can't drop or alter tables.
+
+## 2026-11-11: what the search treats as close
+
+- **Decision:**
+  - A departure that doesn't offer a must-have activity at all is excluded, not a near miss. Only a shortage of places on an offered activity counts as close.
+  - A solo traveller sharing a cabin needs 1 berth left. One who wants their own cabin needs as many berths left as the cabin sleeps, because berths count beds and a private twin takes both. Without that, the last bed in a half-occupied twin would show as a private cabin.
+  - When near misses tie on distance, the cheaper fare comes first, then the earlier start date.
+  - Near misses are picked in rounds, each rule's closest first and then each rule's second closest, in the order budget, dates, berths, activity places, solo price. A departure appears once, under the first rule that reaches it.
+- **Why:** "no kayaking on this ship" isn't something a bit more money or flexibility can fix, so it isn't close. Picking in rounds stops one rule filling all 6 slots.
+
 ## Open
 
 - **Anthropic API key:** a dedicated key with a spend limit, needed from Phase 2.

@@ -13,9 +13,11 @@
     "test:watch": "vitest",
     "verify": "pnpm typecheck && pnpm lint && pnpm test",
     "db:migrate": "node src/db/cli.ts migrate",
-    "db:seed": "node src/db/cli.ts seed"
+    "db:seed": "node src/db/cli.ts seed",
+    "eval": "node src/evals/run.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
     "@electric-sql/pglite": "^0.5.16",
     "next": "16.4.6",
     "pg": "^8.23.1",

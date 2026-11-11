@@ -158,6 +158,19 @@ Decisions made while building, in addition to the ones in `plan.md`. Newest at t
   - Near misses are picked in rounds, each rule's closest first and then each rule's second closest, in the order budget, dates, berths, activity places, solo price. A departure appears once, under the first rule that reaches it.
 - **Why:** "no kayaking on this ship" isn't something a bit more money or flexibility can fix, so it isn't close. Picking in rounds stops one rule filling all 6 slots.
 
+## 2026-11-11: Claude models and the key
+
+- **Decision:** extraction uses `claude-haiku-5-5` and ranking uses `claude-sonnet-5-5`, overridable with `CLAUDE_EXTRACT_MODEL` and `CLAUDE_RANK_MODEL`. Both calls send a Zod schema as `output_config.format`, but use `messages.create` and validate the reply themselves, not `messages.parse`. `parse` validates before returning, so a reply cut off at `max_tokens` would surface as a schema error and lose the stop reason, and refusal handling depends on reading `stop_reason` first. Ranking goes through the beta endpoint for the server-side refusal fallback (`fallbacks: "default"`), so a refused ranking is retried on a fallback model in the same call. Ranking allows 120 seconds and 1 SDK retry, because a timed-out ranking is expensive to repeat. The API key sits in its own Console workspace with a monthly spend limit, is stored as the `anthropic-api-key` secret, and only `voyage-web` can read it. Prices for the cost report are in `src/claude/models.ts`, with a fixed USD to GBP rate of 0.79.
+- **Why:** the plan asks for a small, cheap model for extraction and a mid-tier one for ranking. At current prices Haiku 5.5 costs a twentieth of Sonnet 5.5 per token, and extraction is a simple task.
+- **Logging to `shortlists`:** the calls return their model, tokens and latency, and Phase 3 writes them to `shortlists` when that table is created alongside `briefs`. Phase 2 has no tables to write to yet.
+
+## 2026-11-11: reading vague dates, and how the evaluation grades them
+
+- **Decision:** the extraction prompt fixes conventions for vague dates. "Early", "mid" and "late" start a window on the 1st, 15th and 20th and end it on the 10th, 15th and last day, and apply only to words attached to a month. "After Christmas" starts on 26 December. A last free day ends the window ("back at work on the 29th" ends on the 28th, "home by 16 Jan" on the 16th). An event spent on board must fall inside the voyage: "Christmas on board" starts around 18 to 20 December, "over New Year" on 26 December. The evaluation grades each window as exact, close (both ends within 3 days) or wrong, and counts exact and close as correct.
+- **Why:** notes like "mid Jan" have no single right answer, and the specialist checks the dates on the form before any search runs. Fixed conventions make extraction predictable, and the tolerance stops the evaluation failing on a day's difference while still catching real errors such as a Christmas trip starting on Christmas Day.
+- **Known conflict:** the `solo-own-cabin` case expects "late Nov" to start on 15 November, not the 20th, because the expected departure leaves on the 16th. The case stays as written: it shows a specialist widening the window, and moving it would drop the departure it expects.
+- **Result:** windows went from 3 of 10 exact to 7 exact and 2 close, with ranking unchanged at 10 of 10 in the top 3.
+
 ## Open
 
-- **Anthropic API key:** a dedicated key with a spend limit, needed from Phase 2.
+- Nothing open.

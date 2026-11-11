@@ -46,3 +46,14 @@ export async function listDepartures(db: Db): Promise<DepartureListing[]> {
     ORDER BY d.start_date, d.id
   `);
 }
+
+export interface ActivityOption {
+  id: string;
+  name: string;
+  [key: string]: unknown;
+}
+
+/** The activities a brief can require, for the extraction prompt and the form. */
+export async function listActivities(db: Db): Promise<ActivityOption[]> {
+  return db.query<ActivityOption>("SELECT id, name FROM activities ORDER BY name");
+}

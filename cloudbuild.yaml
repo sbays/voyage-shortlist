@@ -95,7 +95,7 @@ steps:
       - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}
       - --service-account=${_RUNTIME_SA}
       # Rows only (no DDL), and readable only by voyage-web.
-      - --set-secrets=DATABASE_URL=voyage-db-web-url:latest
+      - --set-secrets=DATABASE_URL=voyage-db-web-url:latest,ANTHROPIC_API_KEY=anthropic-api-key:latest
       - --min-instances=0
       - --max-instances=2
       # Public access is granted once by `scripts/gcp-setup.sh public`, so this

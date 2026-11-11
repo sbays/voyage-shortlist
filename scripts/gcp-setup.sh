@@ -9,6 +9,7 @@
 #   bash scripts/gcp-setup.sh public    # after the first deploy: open the demo to everyone
 #   bash scripts/gcp-setup.sh pr-checks # typecheck, lint and test on every PR to main
 #   bash scripts/gcp-setup.sh database  # db job account and the 2 Neon connection secrets
+#   bash scripts/gcp-setup.sh anthropic # the Anthropic API key secret, readable by voyage-web only
 set -euo pipefail
 
 PROJECT=tern-floe
@@ -25,6 +26,7 @@ PR_SA="voyage-pr-checks@${PROJECT}.iam.gserviceaccount.com"
 DB_SA="voyage-db@${PROJECT}.iam.gserviceaccount.com"
 DB_ADMIN_SECRET=voyage-db-admin-url
 DB_WEB_SECRET=voyage-db-web-url
+ANTHROPIC_SECRET=anthropic-api-key
 
 g() { gcloud --project="$PROJECT" --quiet "$@"; }
 say() { printf '\n==> %s\n' "$*"; }
@@ -347,8 +349,29 @@ database() {
   fi
 }
 
+anthropic() {
+  say "Anthropic API key secret (global; the value is added by hand)"
+  ensure_secret "$ANTHROPIC_SECRET"
+  g_iam secrets add-iam-policy-binding "$ANTHROPIC_SECRET" \
+    --member="serviceAccount:${WEB_SA}" --role=roles/secretmanager.secretAccessor >/dev/null
+  echo "voyage-web reads ${ANTHROPIC_SECRET}"
+
+  local latest
+  latest=$(g secrets versions list "$ANTHROPIC_SECRET" --filter=state=ENABLED --limit=1 --format='value(name)')
+  if [[ -n "$latest" ]]; then
+    say "Anthropic key has a value (version ${latest##*/}). The next deploy passes it to Cloud Run."
+  else
+    echo
+    echo "No value yet. Create a key in its own Console workspace with a monthly"
+    echo "spend limit, then run this, paste the key, press Enter, then Ctrl-D:"
+    echo
+    echo "  gcloud secrets versions add ${ANTHROPIC_SECRET} --project=${PROJECT} --data-file=-"
+  fi
+}
+
 case "${1:-}" in
   base | connect | trigger | public | database) "$1" ;;
   pr-checks) pr_checks ;;
-  *) sed -n '5,11p' "$0"; exit 1 ;;
+  anthropic) anthropic ;;
+  *) sed -n '5,12p' "$0"; exit 1 ;;
 esac

@@ -1,0 +1,63 @@
+# Runs on every push to main (see the trigger in README). Checks first, then
+# builds the image into Artifact Registry and deploys it to Cloud Run.
+
+substitutions:
+  _REGION: europe-west2
+  _REPO: voyage-shortlist
+  _SERVICE: voyage-shortlist
+  _RUNTIME_SA: voyage-web@${PROJECT_ID}.iam.gserviceaccount.com
+
+options:
+  # Required when the trigger runs as a user-managed service account.
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true
+
+steps:
+  - id: checks
+    name: node:24-slim
+    entrypoint: bash
+    env:
+      - NEXT_TELEMETRY_DISABLED=1
+      - COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+    args:
+      - -euo
+      - pipefail
+      - -c
+      - |
+        corepack enable
+        pnpm install --frozen-lockfile
+        pnpm typecheck
+        pnpm lint
+        pnpm test
+
+  - id: build-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}
+      - .
+
+  - id: push-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --project=${PROJECT_ID}
+      - --region=${_REGION}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}
+      - --service-account=${_RUNTIME_SA}
+      - --min-instances=0
+      - --max-instances=2
+      - --allow-unauthenticated
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/web:${SHORT_SHA}

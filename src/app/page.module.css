@@ -1,0 +1,33 @@
+.main {
+  width: 100%;
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 4rem 1rem;
+}
+
+.eyebrow {
+  color: var(--muted);
+  font-size: 0.875rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin-top: 0.5rem;
+  font-size: clamp(2rem, 6vw, 2.75rem);
+  line-height: 1.15;
+}
+
+.lede {
+  margin-top: 1rem;
+  font-size: 1.125rem;
+}
+
+.status {
+  margin-top: 2rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--surface);
+  color: var(--muted);
+}

@@ -115,6 +115,17 @@ Decisions made while building, in addition to the ones in `plan.md`. Newest at t
 - **Why:** bugs are caught before they reach main, where every push deploys. The user stays in charge of which findings matter. Portfolio reviewers can read the project stage by stage, one PR at a time.
 - **Replaces:** an earlier decision the same day to review before each commit and commit straight to main.
 
+## 2026-11-11: checks on every PR, run by an account that can't deploy
+
+- **Decision:** a second trigger, `pr-checks`, runs `cloudbuild-pr.yaml` on every PR to main, so the `protect-main` ruleset can require it to pass. Both build files run the same `pnpm verify` script (typecheck, lint, test), so PR checks and deploy checks can't drift apart. The trigger runs as `voyage-pr-checks`, which is granted only `roles/logging.logWriter`. External contributors' PRs wait for the owner's `/gcbrun` comment, while the owner's PRs run automatically. Re-running the setup step checks an existing trigger's account, build file and comment setting, and stops if any of them is wrong.
+- **Why:** the repo is public, and a PR build uses the config from the PR's own branch, so whoever opens the PR controls every step, including `pnpm install`. The protection is exactly the account's roles, nothing more. With log writing as its only role, the build can't deploy, push images or read secrets. Any role added to `voyage-pr-checks` later becomes reachable by PR code, so it must stay log-only. pnpm 11 also skips dependency install scripts unless they're allowed in `pnpm-workspace.yaml` (`allowBuilds`, currently all disabled), which reduces what a malicious dependency could run.
+- **Required check name:** not assumed. It's read from the first PR that runs the trigger, then added to `protect-main`.
+
+## 2026-11-11: Vitest config is `vitest.config.mts`
+
+- **Decision:** the Vitest config uses the `.mts` extension rather than adding `"type": "module"` to `package.json`.
+- **Why:** Vite 8 warned that its future native config loader would load a `.ts` file as CommonJS. `.mts` fixes that for this one file, without changing how Next.js and ESLint load their configs.
+
 ## Open
 
 - **Anthropic API key:** a dedicated key with a spend limit, needed from Phase 2.

@@ -1,0 +1,25 @@
+# Runs on every pull request to main, through the trigger created by
+# `scripts/gcp-setup.sh pr-checks`. Checks only: no image, no deploy.
+#
+# This file is read from the PR's own branch, so the trigger runs as
+# voyage-pr-checks, which can only write build logs. External contributors'
+# PRs wait for a `/gcbrun` comment from the owner before running.
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  - id: checks
+    name: node:24-slim
+    entrypoint: bash
+    env:
+      - NEXT_TELEMETRY_DISABLED=1
+      - COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+    args:
+      - -euo
+      - pipefail
+      - -c
+      - |
+        corepack enable
+        pnpm install --frozen-lockfile
+        pnpm verify

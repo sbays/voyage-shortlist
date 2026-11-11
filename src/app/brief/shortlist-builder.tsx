@@ -4,7 +4,7 @@ import { useActionState, useRef, useState } from "react";
 import { extractBriefAction } from "../actions";
 import { MAX_NOTES_LENGTH, NOTES_FIELD, type ExtractState } from "../action-types";
 import { BriefForm } from "./brief-form";
-import { EXAMPLE_NOTES } from "./example-notes";
+import type { ExampleNotes } from "./example-notes";
 import { ExampleNotesCard } from "./example-notes-card";
 import { isNotesProblem } from "./form-values";
 import styles from "./brief.module.css";
@@ -18,13 +18,21 @@ type Extracted = Extract<ExtractState, { status: "ok" }>;
  * React resets uncontrolled fields after a form action, which would wipe
  * the notes and the specialist's corrections.
  */
-export function ShortlistBuilder() {
+interface ShortlistBuilderProps {
+  /** Example notes dated for the season in the database, streamed in. */
+  examples: Promise<ExampleNotes[]>;
+}
+
+export function ShortlistBuilder({ examples }: ShortlistBuilderProps) {
   const [state, extract, pending] = useActionState(extractBriefAction, INITIAL);
   const [notes, setNotes] = useState("");
   const notesRef = useRef<HTMLTextAreaElement>(null);
   // The specialist's own notes from before an example replaced them, so they
   // can be restored. Cleared once they type again.
   const [ownNotes, setOwnNotes] = useState<string | null>(null);
+  // The example last loaded into the box, so loading another doesn't offer
+  // to "restore" an example as if the specialist had written it.
+  const [loadedExample, setLoadedExample] = useState<string | null>(null);
   // An error is hidden once an example is loaded, since it was about the
   // notes that example replaced. A new submit brings a new state object.
   const [dismissedError, setDismissedError] = useState<ExtractState | null>(null);
@@ -44,9 +52,10 @@ export function ShortlistBuilder() {
   // users land on the notes they just loaded and can read or extract them.
   function pickExample(example: string) {
     // Only text the specialist wrote is worth restoring, not an earlier example.
-    const isOwn = notes.trim() !== "" && !EXAMPLE_NOTES.some((e) => e.notes === notes);
+    const isOwn = notes.trim() !== "" && notes !== loadedExample;
     if (isOwn) setOwnNotes(notes);
     setNotes(example);
+    setLoadedExample(example);
     setDismissedError(state);
     notesRef.current?.focus();
   }
@@ -68,7 +77,7 @@ export function ShortlistBuilder() {
 
   return (
     <>
-      <ExampleNotesCard onPick={pickExample} disabled={pending} />
+      <ExampleNotesCard examples={examples} onPick={pickExample} disabled={pending} />
       <form action={extract} className={styles.card} aria-labelledby="notes-heading">
         <h2 id="notes-heading" className={styles.heading}>
           1. Call notes

@@ -8,13 +8,14 @@ import { ShortlistView } from "@/app/shortlist/shortlist-view";
 import { getBrief, getLatestShortlist, type StoredBrief } from "@/db/briefs";
 import { listActivities } from "@/db/catalogue";
 import { getDb } from "@/db/connection";
-import { listMatches, type Match } from "@/db/matches";
-import { exclusionCounts } from "@/db/search";
+import { lastMatchRun, listMatches, type Match } from "@/db/matches";
+import { exclusionCounts, isoToday } from "@/db/search";
 import { availabilityAsOf } from "@/domain/shortlist";
 import { formatDate, formatTimestamp } from "@/lib/dates";
 import { formatGbp } from "@/lib/money";
 import { routeLabel } from "@/lib/routes";
 import styles from "../briefs.module.css";
+import { LastChecked } from "../last-checked";
 
 export const metadata: Metadata = {
   title: "Saved brief · Tern & Floe",
@@ -48,16 +49,17 @@ async function SavedBrief({ params }: Pick<PageProps<"/briefs/[id]">, "params">)
   // Only saved briefs have a page: an unsaved run is the visitor's own work.
   if (!stored?.saved) notFound();
 
-  const [matches, latest, activities] = await Promise.all([
-    listMatches(db, stored),
+  const [matches, latest, activities, lastRun] = await Promise.all([
+    listMatches(db, stored, { today: isoToday() }),
     getLatestShortlist(db, stored.id),
     listActivities(db),
+    lastMatchRun(db),
   ]);
   // The log keeps the shortlist but not the exclusion counts, so a "nothing
   // fits" run recomputes them to name the rule that ruled out the most.
   const nothingShown =
     latest !== null && latest.shortlist.picks.length === 0 && latest.shortlist.nearMisses.length === 0;
-  const exclusions = nothingShown ? await exclusionCounts(db, stored.brief.rules) : [];
+  const exclusions = nothingShown ? await exclusionCounts(db, stored.brief.rules, { today: isoToday() }) : [];
   const activityNames = new Map(activities.map((a) => [a.id, a.name]));
 
   const result: ShortlistResult | null = latest && {
@@ -80,6 +82,7 @@ async function SavedBrief({ params }: Pick<PageProps<"/briefs/[id]">, "params">)
         <h2 id="new-matches" className={styles.sectionTitle}>
           New matches
         </h2>
+        <LastChecked run={lastRun} />
         <MatchList matches={matches} />
       </section>
 

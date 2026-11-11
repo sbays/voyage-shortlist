@@ -123,7 +123,7 @@ function round50(pounds: number): number {
 
 const SEASON_START = "2026-11-02";
 const SEASON_END = "2027-03-31";
-const AVAILABILITY_BASE = Date.parse("2026-11-01T09:00:00Z");
+export const AVAILABILITY_BASE = Date.parse("2026-11-01T09:00:00Z");
 
 // ---------------------------------------------------------------------------
 // Fixed catalogue

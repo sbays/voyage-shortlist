@@ -1,3 +1,4 @@
+import { seasonStartYear } from "../domain/season.ts";
 import type { Db } from "./db.ts";
 
 // Read-only views of the catalogue for browsing. The search for a brief is
@@ -20,9 +21,16 @@ export interface DepartureListing {
   availabilityUpdatedAt: string;
 }
 
-/** Every departure in start-date order, with its cheapest available fare. */
-export async function listDepartures(db: Db): Promise<DepartureListing[]> {
-  return db.query<DepartureListing>(`
+/**
+ * Every departure in start-date order, with its cheapest available fare.
+ * With `today`, departures that have already sailed are left out.
+ */
+export async function listDepartures(
+  db: Db,
+  options: { today?: string } = {},
+): Promise<DepartureListing[]> {
+  return db.query<DepartureListing>(
+    `
     SELECT d.id AS "departureId",
            d.start_date::text AS "startDate", d.end_date::text AS "endDate",
            v.nights, v.name AS "voyageName", v.route::text AS route,
@@ -42,8 +50,11 @@ export async function listDepartures(db: Db): Promise<DepartureListing[]> {
     JOIN voyages v ON v.id = d.voyage_id
     JOIN ships s ON s.id = v.ship_id
     JOIN operators o ON o.id = s.operator_id
+    WHERE $1::date IS NULL OR d.start_date >= $1::date
     ORDER BY d.start_date, d.id
-  `);
+  `,
+    [options.today ?? null],
+  );
 }
 
 export interface ActivityOption {
@@ -54,4 +65,16 @@ export interface ActivityOption {
 /** The activities a brief can require, for the extraction prompt and the form. */
 export async function listActivities(db: Db): Promise<ActivityOption[]> {
   return db.query<ActivityOption>("SELECT id, name FROM activities ORDER BY name");
+}
+
+/**
+ * The year the season in the database starts in, from its earliest
+ * departure. The seed rolls dates forward, so this follows the data rather
+ * than the clock; an empty catalogue falls back to the current season.
+ */
+export async function seasonStartYearInCatalogue(db: Db, today = new Date()): Promise<number> {
+  const [row] = await db.query<{ first: string | null }>(
+    "SELECT min(start_date)::text AS first FROM departures",
+  );
+  return seasonStartYear(row?.first ? new Date(`${row.first}T00:00:00Z`) : today);
 }

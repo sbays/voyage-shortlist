@@ -61,11 +61,12 @@ const iso = (value: Date | string) => (value instanceof Date ? value.toISOString
 export async function listMatches(
   db: Db,
   stored: Pick<StoredBrief, "id" | "brief">,
+  options: { today?: string } = {},
 ): Promise<Match[]> {
   const rows = await db.query<MatchRow>(MATCHES_SQL, [stored.id]);
   if (rows.length === 0) return [];
 
-  const { candidates } = await searchDepartures(db, stored.brief.rules);
+  const { candidates } = await searchDepartures(db, stored.brief.rules, { today: options.today });
   const current = new Map(candidates.map((c) => [c.departureId, c]));
 
   return rows.map((row) => {
@@ -116,4 +117,32 @@ export async function markMatchesSeen(db: Db, briefId: string): Promise<number> 
     [stored.id],
   );
   return rows.length;
+}
+
+export interface MatchRun {
+  startedAt: string;
+  finishedAt: string;
+  briefsChecked: number;
+  matchesWritten: number;
+}
+
+/** The most recent finished run of the nightly match job, or null if none has finished. */
+export async function lastMatchRun(db: Db): Promise<MatchRun | null> {
+  const [row] = await db.query<{
+    started_at: Date | string;
+    finished_at: Date | string;
+    briefs_checked: number;
+    matches_written: number;
+  }>(
+    `SELECT started_at, finished_at, briefs_checked, matches_written FROM match_runs
+     WHERE finished_at IS NOT NULL
+     ORDER BY finished_at DESC LIMIT 1`,
+  );
+  if (!row) return null;
+  return {
+    startedAt: iso(row.started_at),
+    finishedAt: iso(row.finished_at),
+    briefsChecked: row.briefs_checked,
+    matchesWritten: row.matches_written,
+  };
 }

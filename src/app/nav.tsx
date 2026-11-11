@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/", label: "New shortlist" },
   { href: "/briefs", label: "Saved briefs" },
   { href: "/departures", label: "Departures" },
+  { href: "/import", label: "Import" },
 ] as const;
 
 function isCurrent(pathname: string, href: string): boolean {

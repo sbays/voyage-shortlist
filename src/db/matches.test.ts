@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Brief } from "../domain/brief.ts";
 import { createBrief, saveBrief } from "./briefs.ts";
 import type { Db } from "./db.ts";
-import { countUnseenMatches, listMatches, markMatchesSeen } from "./matches.ts";
+import { countUnseenMatches, lastMatchRun, listMatches, markMatchesSeen } from "./matches.ts";
 import { migrate } from "./migrate.ts";
 import { createPgliteDb } from "./pglite.ts";
 import { searchDepartures } from "./search.ts";
@@ -108,5 +108,27 @@ describe("matches", () => {
     expect(await markMatchesSeen(db, briefId)).toBe(3);
     expect((await countUnseenMatches(db)).has(briefId)).toBe(false);
     expect(await markMatchesSeen(db, "nope")).toBe(0);
+  });
+});
+
+describe("lastMatchRun", () => {
+  it("is null until a run finishes, then the latest finished run", async () => {
+    await db.exec("DELETE FROM match_runs");
+    expect(await lastMatchRun(db)).toBeNull();
+
+    await db.query("INSERT INTO match_runs (started_at) VALUES ('2026-11-12T02:00:00Z')");
+    expect(await lastMatchRun(db)).toBeNull();
+
+    await db.query(
+      `INSERT INTO match_runs (started_at, finished_at, briefs_checked, matches_written) VALUES
+       ('2026-11-10T02:00:00Z', '2026-11-10T02:00:05Z', 1, 0),
+       ('2026-11-11T02:00:00Z', '2026-11-11T02:00:07Z', 3, 2)`,
+    );
+    expect(await lastMatchRun(db)).toEqual({
+      startedAt: "2026-11-11T02:00:00.000Z",
+      finishedAt: "2026-11-11T02:00:07.000Z",
+      briefsChecked: 3,
+      matchesWritten: 2,
+    });
   });
 });

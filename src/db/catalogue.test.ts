@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { listDepartures } from "./catalogue.ts";
+import { listDepartures, seasonStartYearInCatalogue } from "./catalogue.ts";
 import type { Db } from "./db.ts";
 import { migrate } from "./migrate.ts";
 import { createPgliteDb } from "./pglite.ts";
@@ -59,5 +59,32 @@ describe("listDepartures", () => {
     }
     expect(departures.some((d) => d.activityNames.length === 0)).toBe(true);
     expect(departures.some((d) => d.activityNames.length > 0)).toBe(true);
+  });
+});
+
+describe("seasonStartYearInCatalogue", () => {
+  it("reads the season from the departures, not the clock", async () => {
+    expect(await seasonStartYearInCatalogue(db, new Date("2031-06-01T00:00:00Z"))).toBe(2026);
+  });
+
+  it("follows the catalogue when the seed has rolled it forward", async () => {
+    const rolled = await createPgliteDb();
+    try {
+      await migrate(rolled);
+      await seed(rolled, { now: new Date("2028-05-01T00:00:00Z") });
+      expect(await seasonStartYearInCatalogue(rolled)).toBe(2028);
+    } finally {
+      await rolled.close();
+    }
+  });
+
+  it("falls back to the current season for an empty catalogue", async () => {
+    const empty = await createPgliteDb();
+    try {
+      await migrate(empty);
+      expect(await seasonStartYearInCatalogue(empty, new Date("2029-02-01T00:00:00Z"))).toBe(2028);
+    } finally {
+      await empty.close();
+    }
   });
 });

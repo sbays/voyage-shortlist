@@ -19,6 +19,12 @@ describe("nearMissText", () => {
     expect(nearMissText({ rule: "outside_window", distance: 1 })).toBe("1 day outside the date window");
     expect(nearMissText({ rule: "berths_short", distance: 2 })).toBe("2 berths short");
     expect(nearMissText({ rule: "activity_places_short", distance: 1 })).toBe("1 activity place short");
+    expect(
+      nearMissText({ rule: "activity_places_short", distance: 1, shortActivity: "Sea kayaking" }),
+    ).toBe("1 sea kayaking place short");
+    expect(
+      nearMissText({ rule: "activity_places_short", distance: 3, shortActivity: "Overnight camping" }),
+    ).toBe("3 overnight camping places short");
     expect(nearMissText({ rule: "no_solo_price", distance: 0 })).toBe(
       "No solo price for a cabin of their own; sharing fits",
     );

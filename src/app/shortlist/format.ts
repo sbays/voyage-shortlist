@@ -13,8 +13,10 @@ export const NAME_FALLBACK = "[your name]";
 export const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** What a near miss would take, in the rule's own unit. */
-export function nearMissText(nearMiss: Pick<NearMiss, "rule" | "distance">): string {
-  const { rule, distance } = nearMiss;
+export function nearMissText(
+  nearMiss: Pick<NearMiss, "rule" | "distance" | "shortActivity">,
+): string {
+  const { rule, distance, shortActivity } = nearMiss;
   switch (rule) {
     case "over_budget":
       return `${formatGbp(distance)} per person over budget`;
@@ -23,6 +25,11 @@ export function nearMissText(nearMiss: Pick<NearMiss, "rule" | "distance">): str
     case "berths_short":
       return `${plural(distance, "berth", "berths")} short`;
     case "activity_places_short":
+      // "1 sea kayaking place short", from the activity's catalogue name.
+      if (shortActivity) {
+        const activity = shortActivity.charAt(0).toLowerCase() + shortActivity.slice(1);
+        return `${plural(distance, `${activity} place`, `${activity} places`)} short`;
+      }
       return `${plural(distance, "activity place", "activity places")} short`;
     case "no_solo_price":
       return "No solo price for a cabin of their own; sharing fits";

@@ -105,7 +105,12 @@ describe("seeded edge cases", () => {
     expect(nearMiss(r, EDGE_CASES.kayakOnePlaceLeft)).toMatchObject({
       rule: "activity_places_short",
       distance: 1,
+      shortActivity: "Sea kayaking",
     });
+    // Only the activity rule names an activity.
+    for (const n of r.nearMisses.filter((m) => m.rule !== "activity_places_short")) {
+      expect(n.shortActivity).toBeNull();
+    }
   });
 
   it("a voyage ending 2 days after the window is a date near miss", async () => {

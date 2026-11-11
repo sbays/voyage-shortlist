@@ -196,6 +196,7 @@ describe("near misses", () => {
     expect(nearMisses.map((n) => [n.departureId, n.rule, n.distance])).toEqual([
       ["dep_places", "activity_places_short", 1],
     ]);
+    expect(nearMisses[0].shortActivity).toBe("Kayaking");
 
     const noActivity = await searchDepartures(db, brief());
     expect(noActivity.nearMisses.map((n) => [n.departureId, n.rule, n.distance])).toEqual([
@@ -420,5 +421,36 @@ describe("travelling alone", () => {
     const result = await searchDepartures(db, brief({ partySize: 1, soloPreference: "own_cabin" }));
 
     expect(result).toEqual({ candidates: [], nearMisses: [] });
+  });
+});
+
+describe("the short activity's name", () => {
+  it("names the must-have with the biggest shortfall, then by name", async () => {
+    await db.exec(`
+      INSERT INTO activities VALUES
+        ('act_camp', 'Camping', 'A night ashore'),
+        ('act_shoe', 'Snowshoeing', 'Walks above the landing');
+    `);
+    await departure("dep_two_short", "2026-12-05", "2026-12-15", [{ cabin: "cab_twin", pp: 8_000 }], {
+      places: 1,
+      price: 0,
+    });
+    // Party of 2: kayaking is 1 short, camping 2 short, snowshoeing 2 short.
+    await db.query(`
+      INSERT INTO departure_activities VALUES
+        ('dep_two_short', 'act_camp', 0, 0),
+        ('dep_two_short', 'act_shoe', 0, 0)
+    `);
+
+    const { nearMisses } = await searchDepartures(
+      db,
+      brief({ mustHaveActivityIds: ["act_kayak", "act_camp", "act_shoe"] }),
+    );
+    expect(nearMisses).toHaveLength(1);
+    expect(nearMisses[0]).toMatchObject({
+      rule: "activity_places_short",
+      distance: 2,
+      shortActivity: "Camping",
+    });
   });
 });

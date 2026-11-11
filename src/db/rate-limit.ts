@@ -12,9 +12,53 @@ export type RateLimitResult =
   | { ok: true }
   | { ok: false; scope: "ip" | "global"; retryAfterSeconds: number };
 
+/** Wrong admin tokens one address may send in an hour before it's refused. */
+export const FAILED_TOKEN_ATTEMPTS_PER_HOUR = 10;
+
+const addressHash = (ip: string) => createHash("sha256").update(ip).digest("hex").slice(0, 32);
+
 /** The stored key for an address: a hash, so no raw IP sits in the table. */
 export function ipKey(ip: string): string {
-  return `ip:${createHash("sha256").update(ip).digest("hex").slice(0, 32)}`;
+  return `ip:${addressHash(ip)}`;
+}
+
+/** The key that counts an address's wrong admin tokens, also hashed. */
+export function adminTokenKey(ip: string): string {
+  return `admin-token:${addressHash(ip)}`;
+}
+
+function windowFor(now: Date) {
+  const windowStart = new Date(Math.floor(now.getTime() / WINDOW_MS) * WINDOW_MS);
+  const retryAfterSeconds = Math.ceil((windowStart.getTime() + WINDOW_MS - now.getTime()) / 1000);
+  return { windowStart, retryAfterSeconds };
+}
+
+/**
+ * Whether a key has reached its limit in the current hour, without counting
+ * anything. Used to refuse an address before doing any work for it.
+ */
+export async function isOverLimit(
+  db: Db,
+  key: string,
+  limit: number,
+  now = new Date(),
+): Promise<{ over: false } | { over: true; retryAfterSeconds: number }> {
+  const { windowStart, retryAfterSeconds } = windowFor(now);
+  const [row] = await db.query<{ count: number }>(
+    "SELECT count FROM rate_limits WHERE key = $1 AND window_start = $2",
+    [key, windowStart],
+  );
+  return (row?.count ?? 0) >= limit ? { over: true, retryAfterSeconds } : { over: false };
+}
+
+/** Adds to a key's count for the current hour. */
+export async function countAgainst(db: Db, key: string, amount = 1, now = new Date()): Promise<void> {
+  const { windowStart } = windowFor(now);
+  await db.query(
+    `INSERT INTO rate_limits (key, window_start, count) VALUES ($1, $2, $3)
+     ON CONFLICT (key, window_start) DO UPDATE SET count = rate_limits.count + $3`,
+    [key, windowStart, amount],
+  );
 }
 
 /**
@@ -28,8 +72,7 @@ export async function consumeClaudeCalls(
   calls = 1,
   now = new Date(),
 ): Promise<RateLimitResult> {
-  const windowStart = new Date(Math.floor(now.getTime() / WINDOW_MS) * WINDOW_MS);
-  const retryAfterSeconds = Math.ceil((windowStart.getTime() + WINDOW_MS - now.getTime()) / 1000);
+  const { windowStart, retryAfterSeconds } = windowFor(now);
   const limits = [
     { key: ipKey(ip), limit: CALLS_PER_IP_PER_HOUR, scope: "ip" as const },
     { key: "global", limit: CALLS_PER_HOUR_GLOBAL, scope: "global" as const },

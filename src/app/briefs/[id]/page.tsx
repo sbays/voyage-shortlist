@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { Suspense } from "react";
+import { rebuildShortlistAction } from "@/app/actions";
 import type { ShortlistResult } from "@/app/action-types";
 import { ShortlistView } from "@/app/shortlist/shortlist-view";
 import { getBrief, getLatestShortlist, type StoredBrief } from "@/db/briefs";
@@ -15,6 +16,7 @@ import { formatDate, formatTimestamp } from "@/lib/dates";
 import { formatGbp } from "@/lib/money";
 import { routeLabel } from "@/lib/routes";
 import styles from "../briefs.module.css";
+import { RebuildShortlist } from "./rebuild-shortlist";
 import { LastChecked } from "../last-checked";
 
 export const metadata: Metadata = {
@@ -90,14 +92,12 @@ async function SavedBrief({ params }: Pick<PageProps<"/briefs/[id]">, "params">)
         <h2 id="latest-shortlist" className={styles.sectionTitle}>
           Latest shortlist
         </h2>
-        {latest && result ? (
-          <>
-            <p className={styles.muted}>Built {formatTimestamp(latest.createdAt)}</p>
-            <ShortlistView result={result} specialistName="" headingLevel={3} />
-          </>
-        ) : (
-          <p className={styles.empty}>No shortlist has been built for this brief yet.</p>
-        )}
+        <RebuildShortlist
+          action={rebuildShortlistAction.bind(null, stored.id)}
+          builtAt={latest ? formatTimestamp(latest.createdAt) : null}
+          newMatches={matches.filter((m) => !m.seen && m.status === "available").length}
+        />
+        {result ? <ShortlistView result={result} specialistName="" headingLevel={3} /> : null}
       </section>
     </>
   );

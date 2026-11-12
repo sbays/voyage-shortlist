@@ -26,8 +26,11 @@ const extractBrief = vi.hoisted(() => vi.fn());
 const rankShortlist = vi.hoisted(() => vi.fn());
 vi.mock("@/claude/extract", () => ({ extractBrief }));
 vi.mock("@/claude/rank", () => ({ rankShortlist }));
+const refresh = vi.hoisted(() => vi.fn());
+vi.mock("next/cache", () => ({ refresh }));
 
-const { extractBriefAction, runShortlistAction, saveBriefAction } = await import("./actions.ts");
+const { extractBriefAction, rebuildShortlistAction, runShortlistAction, saveBriefAction } =
+  await import("./actions.ts");
 
 let db: Db;
 
@@ -171,5 +174,102 @@ describe("saveBriefAction", () => {
       status: "error",
       message: "That brief no longer exists.",
     });
+  });
+});
+
+describe("rebuildShortlistAction", () => {
+  async function savedBrief(): Promise<string> {
+    rankShortlist.mockResolvedValue({ shortlist: emptyShortlist, usage: [usage] });
+    const run = await runShortlistAction({ status: "idle" }, briefForm());
+    if (run.status !== "ok") throw new Error(`run failed: ${JSON.stringify(run)}`);
+    await saveBriefAction(run.result.briefId);
+    return run.result.briefId;
+  }
+
+  it("logs a fresh shortlist, marks the brief's matches seen and refreshes the page", async () => {
+    const briefId = await savedBrief();
+    const [{ id: departureId }] = await db.query<{ id: string }>("SELECT id FROM departures LIMIT 1");
+    await db.query("INSERT INTO matches (brief_id, departure_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [
+      briefId,
+      departureId,
+    ]);
+    const before = await count("shortlists");
+
+    expect(await rebuildShortlistAction(briefId)).toEqual({ status: "rebuilt" });
+    expect(await count("shortlists")).toBe(before + 1);
+    const unseen = await db.query("SELECT 1 FROM matches WHERE brief_id = $1 AND NOT seen", [briefId]);
+    expect(unseen).toHaveLength(0);
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("records what the rebuild showed as known, so the nightly job won't call it new", async () => {
+    const briefId = await savedBrief();
+    await db.query("DELETE FROM brief_known_departures WHERE brief_id = $1", [briefId]);
+
+    expect(await rebuildShortlistAction(briefId)).toEqual({ status: "rebuilt" });
+    const known = await db.query("SELECT 1 FROM brief_known_departures WHERE brief_id = $1", [briefId]);
+    expect(known.length).toBeGreaterThan(0);
+  });
+
+  it("leaves a match found while the rebuild was ranking unseen", async () => {
+    const briefId = await savedBrief();
+    const [{ id: departureId }] = await db.query<{ id: string }>("SELECT id FROM departures LIMIT 1");
+    // Found after the rebuild's search started, as if the job ran mid-rebuild.
+    await db.query(
+      "INSERT INTO matches (brief_id, departure_id, found_at) VALUES ($1, $2, now() + interval '1 hour')",
+      [briefId, departureId],
+    );
+
+    await rebuildShortlistAction(briefId);
+    const unseen = await db.query("SELECT 1 FROM matches WHERE brief_id = $1 AND NOT seen", [briefId]);
+    expect(unseen).toHaveLength(1);
+  });
+
+  it("reports a rebuild it couldn't log, and changes nothing", async () => {
+    const briefId = await savedBrief();
+    const [{ id: departureId }] = await db.query<{ id: string }>("SELECT id FROM departures LIMIT 1");
+    await db.query("INSERT INTO matches (brief_id, departure_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", [
+      briefId,
+      departureId,
+    ]);
+    refresh.mockClear();
+    await db.exec(`
+      CREATE FUNCTION refuse_log() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'log unavailable'; END $$;
+      CREATE TRIGGER refuse_log BEFORE INSERT ON shortlists FOR EACH ROW EXECUTE FUNCTION refuse_log();
+    `);
+    try {
+      expect(await rebuildShortlistAction(briefId)).toMatchObject({ status: "error" });
+    } finally {
+      await db.exec("DROP TRIGGER refuse_log ON shortlists; DROP FUNCTION refuse_log();");
+    }
+    const unseen = await db.query("SELECT 1 FROM matches WHERE brief_id = $1 AND NOT seen", [briefId]);
+    expect(unseen).toHaveLength(1);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("refuses a brief that was never saved, without calling Claude", async () => {
+    rankShortlist.mockResolvedValue({ shortlist: emptyShortlist, usage: [] });
+    const run = await runShortlistAction({ status: "idle" }, briefForm());
+    if (run.status !== "ok") throw new Error("run failed");
+    rankShortlist.mockClear();
+
+    expect(await rebuildShortlistAction(run.result.briefId)).toEqual({
+      status: "error",
+      message: "That brief no longer exists.",
+    });
+    expect(rankShortlist).not.toHaveBeenCalled();
+  });
+
+  it("is rate-limited like any other run", async () => {
+    const briefId = await savedBrief();
+    await db.query(
+      "UPDATE rate_limits SET count = $2 WHERE key = $1",
+      [ipKey(state.ip), CALLS_PER_IP_PER_HOUR],
+    );
+    rankShortlist.mockClear();
+
+    expect(await rebuildShortlistAction(briefId)).toMatchObject({ status: "error" });
+    expect(rankShortlist).not.toHaveBeenCalled();
   });
 });

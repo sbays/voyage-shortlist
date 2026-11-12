@@ -71,3 +71,8 @@ export type SaveBriefState =
   | { status: "idle" }
   | { status: "saved"; savedAt: string }
   | { status: "error"; message: string };
+
+export type RebuildState =
+  | { status: "idle" }
+  | { status: "rebuilt" }
+  | { status: "error"; message: string };

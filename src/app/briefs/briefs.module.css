@@ -108,3 +108,52 @@
   border-radius: 0.5rem;
   color: var(--muted);
 }
+
+.rebuild {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 1rem 0 1.5rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 0.5rem;
+  background: var(--surface);
+}
+
+.rebuildActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.primary {
+  padding: 0.625rem 1.25rem;
+  border: 0;
+  border-radius: 0.375rem;
+  background: var(--accent);
+  color: var(--surface);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.primary:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.error {
+  color: #b3261e;
+  font-weight: 600;
+}
+
+.rebuildHeading {
+  font-size: 1rem;
+}

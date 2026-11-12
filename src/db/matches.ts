@@ -1,4 +1,4 @@
-import { getBrief, type StoredBrief } from "./briefs.ts";
+import type { StoredBrief } from "./briefs.ts";
 import type { Db } from "./db.ts";
 import { searchDepartures, type DepartureSummary, type FareOption } from "./search.ts";
 
@@ -105,16 +105,25 @@ export async function countUnseenMatches(db: Db): Promise<Map<string, number>> {
   return new Map(rows.map((r) => [r.brief_id, r.unseen]));
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
- * Marks every match for a brief as seen. Returns how many changed. Nothing
- * calls it yet: Phase 4 decides when a match counts as seen.
+ * Marks a brief's matches as seen, as a shortlist rebuild does. With
+ * `foundBefore`, only matches found before then: a match the nightly job
+ * writes while a rebuild is ranking wasn't in the rebuilt shortlist, so it
+ * stays new. Returns how many changed; 0 for an unknown or malformed ID.
  */
-export async function markMatchesSeen(db: Db, briefId: string): Promise<number> {
-  const stored = await getBrief(db, briefId);
-  if (!stored) return 0;
+export async function markMatchesSeen(
+  db: Db,
+  briefId: string,
+  options: { foundBefore?: Date } = {},
+): Promise<number> {
+  if (!UUID.test(briefId)) return 0;
   const rows = await db.query<{ departure_id: string }>(
-    "UPDATE matches SET seen = true WHERE brief_id = $1 AND NOT seen RETURNING departure_id",
-    [stored.id],
+    `UPDATE matches SET seen = true
+     WHERE brief_id = $1 AND NOT seen AND ($2::timestamptz IS NULL OR found_at < $2)
+     RETURNING departure_id`,
+    [briefId, options.foundBefore ?? null],
   );
   return rows.length;
 }

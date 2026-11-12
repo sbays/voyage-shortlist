@@ -200,6 +200,11 @@ Decisions made while building, in addition to the ones in `plan.md`. Newest at t
 - **Decision:** the search, the exclusion counts, the nightly job, "New matches" and `/departures` leave out departures that start before today (UTC). Tests and the evaluation pass no date and see the whole catalogue.
 - **Why:** from January to March the rolling season keeps the season in progress, so November and December departures have already sailed and must not be offered.
 
+## 2026-11-12: new matches don't rewrite a saved shortlist
+
+- **Decision:** a saved brief's page shows its latest logged shortlist as it was built, with a notice saying when it was built, how many new matches have arrived since and that availability may have changed. A "Rebuild with current availability" button searches the stored brief again, ranks it with Claude, writes a fresh email and logs a new shortlist (earlier ones stay in the log), then records the departures it showed as known (so the nightly job won't report them as new) and marks as seen only the matches found before its search started (one written while Claude was ranking stays new). If the new shortlist can't be logged, the rebuild reports an error and changes nothing. It's rate-limited like any other run, and only saved briefs can be rebuilt: the brief's ID is bound on the server, but a client could send another, which is fine because saved briefs are public in the demo. Nothing rebuilds automatically.
+- **Why:** the saved shortlist is a record of what was ranked and possibly sent, so it shouldn't change without the specialist choosing to. Including a match means a new ranking call, which costs money and shouldn't run nightly for briefs nobody is looking at. A full rebuild keeps the picks, reasons and email consistent, where splicing new matches into an old email would mix old prices with new ones.
+
 ## Open
 
-- Nothing open.
+- **Keep focus on submit buttons while they work.** Every submit button disables itself while pending (`disabled={pending}`), which drops keyboard focus to the page body in most browsers. Switch them all together to `aria-disabled` with a guard against a second submit, so focus stays on the button. Raised in the rebuild review (R5) and left for one change across the app.

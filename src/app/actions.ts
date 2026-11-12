@@ -1,21 +1,32 @@
 "use server";
 
+import { refresh } from "next/cache";
 import { clientIp } from "@/lib/client-ip";
-import { createBrief, getBrief, logShortlist, saveBrief, type ShortlistLog } from "@/db/briefs";
+import {
+  createBrief,
+  getBrief,
+  logShortlist,
+  recordKnownDepartures,
+  saveBrief,
+  type ShortlistLog,
+} from "@/db/briefs";
 import type { Db } from "@/db/db";
 import { listActivities } from "@/db/catalogue";
 import { getDb } from "@/db/connection";
+import { markMatchesSeen } from "@/db/matches";
 import { consumeClaudeCalls, type RateLimitResult } from "@/db/rate-limit";
 import { exclusionCounts, isoToday, searchDepartures } from "@/db/search";
 import { extractBrief } from "@/claude/extract";
 import { rankShortlist } from "@/claude/rank";
 import { ClaudeCallError, type ClaudeFailureKind } from "@/claude/errors";
 import { parseBriefForm } from "@/domain/brief-form";
+import type { Brief } from "@/domain/brief";
 import { availabilityAsOf } from "@/domain/shortlist";
 import {
   MAX_NOTES_LENGTH,
   NOTES_FIELD,
   type ExtractState,
+  type RebuildState,
   type SaveBriefState,
   type ShortlistResult,
   type ShortlistState,
@@ -51,11 +62,13 @@ function rateLimitMessage(result: Extract<RateLimitResult, { ok: false }>): stri
  * Logs a ranking run without letting a logging failure cost the specialist a
  * shortlist that was already paid for.
  */
-async function logQuietly(db: Db, log: ShortlistLog): Promise<void> {
+async function logQuietly(db: Db, log: ShortlistLog): Promise<boolean> {
   try {
     await logShortlist(db, log);
+    return true;
   } catch (error) {
     console.error("Couldn't log the shortlist run", error);
+    return false;
   }
 }
 
@@ -109,40 +122,110 @@ export async function runShortlistAction(
     const limit = await consumeClaudeCalls(db, await clientIp());
     if (!limit.ok) return { status: "error", message: rateLimitMessage(limit) };
 
-    const today = isoToday();
-    const search = await searchDepartures(db, brief.rules, { today });
-    const candidateIds = search.candidates.map((c) => c.departureId);
-    const nothingClose = search.candidates.length === 0 && search.nearMisses.length === 0;
     const briefId = await createBrief(db, rawNotes, brief);
+    const { result } = await searchRankAndLog(db, briefId, brief, { withExclusions: true });
+    return { status: "ok", result: { ...result, saved: false } };
+  } catch (error) {
+    return { status: "error", message: failureMessage(error) };
+  }
+}
 
-    let ranked: Awaited<ReturnType<typeof rankShortlist>>;
-    try {
-      ranked = await rankShortlist(brief, search);
-    } catch (error) {
-      if (error instanceof ClaudeCallError) {
-        await logQuietly(db, {
-          briefId,
-          candidateIds,
-          shortlist: null,
-          failureKind: error.kind,
-          usage: error.usage,
-        });
-      }
-      throw error;
+interface RankedRun {
+  /** Everything but `saved`, which only the caller knows. */
+  result: Omit<ShortlistResult, "saved">;
+  candidateIds: string[];
+  /** False if the run couldn't be written to the shortlist log. */
+  logged: boolean;
+}
+
+/**
+ * The shared core of a shortlist run for a stored brief: search current
+ * availability, rank, and log the run (a failed ranking is logged with its
+ * usage before the error is re-thrown). Exclusion counts are only worked out
+ * when the caller will show them.
+ */
+async function searchRankAndLog(
+  db: Db,
+  briefId: string,
+  brief: Brief,
+  options: { withExclusions: boolean },
+): Promise<RankedRun> {
+  const today = isoToday();
+  const search = await searchDepartures(db, brief.rules, { today });
+  const candidateIds = search.candidates.map((c) => c.departureId);
+  const nothingClose = search.candidates.length === 0 && search.nearMisses.length === 0;
+
+  let ranked: Awaited<ReturnType<typeof rankShortlist>>;
+  try {
+    ranked = await rankShortlist(brief, search);
+  } catch (error) {
+    if (error instanceof ClaudeCallError) {
+      await logQuietly(db, {
+        briefId,
+        candidateIds,
+        shortlist: null,
+        failureKind: error.kind,
+        usage: error.usage,
+      });
     }
-    const { shortlist, usage } = ranked;
-    await logQuietly(db, { briefId, candidateIds, shortlist, failureKind: null, usage });
+    throw error;
+  }
+  const { shortlist, usage } = ranked;
+  const logged = await logQuietly(db, { briefId, candidateIds, shortlist, failureKind: null, usage });
 
-    const result: ShortlistResult = {
+  const exclusions =
+    options.withExclusions && nothingClose ? await exclusionCounts(db, brief.rules, { today }) : [];
+  return {
+    result: {
       briefId,
       brief,
       shortlist,
       candidateCount: search.candidates.length,
-      exclusions: nothingClose ? await exclusionCounts(db, brief.rules, { today }) : [],
+      exclusions,
       availabilityAsOf: availabilityAsOf(shortlist),
-      saved: false,
-    };
-    return { status: "ok", result };
+    },
+    candidateIds,
+    logged,
+  };
+}
+
+/**
+ * Rebuilds a saved brief's shortlist against current availability. The
+ * earlier shortlist stays in the log, and refresh() re-renders the page with
+ * the new one (read back from the log). New matches are simply candidates
+ * now, so the fresh search includes them.
+ *
+ * The brief's ID is bound to this action on the server, but bound arguments
+ * travel with the request and anyone can POST another ID. What protects it is
+ * that only saved briefs can be rebuilt (and saved briefs are public in the
+ * demo) and that every rebuild counts against the rate limit.
+ */
+export async function rebuildShortlistAction(briefId: string): Promise<RebuildState> {
+  try {
+    const db = await getDb();
+    const stored = await getBrief(db, briefId);
+    if (!stored?.saved) return { status: "error", message: "That brief no longer exists." };
+
+    const limit = await consumeClaudeCalls(db, await clientIp());
+    if (!limit.ok) return { status: "error", message: rateLimitMessage(limit) };
+
+    const searchStarted = new Date();
+    const { candidateIds, logged } = await searchRankAndLog(db, stored.id, stored.brief, {
+      withExclusions: false,
+    });
+    // The page shows the logged shortlist, so an unlogged rebuild is lost:
+    // say so, and leave the matches as they were.
+    if (!logged) {
+      return { status: "error", message: "The rebuilt shortlist couldn't be saved. Try again." };
+    }
+    await db.transaction(async (tx) => {
+      // What the specialist now sees is known, so the nightly job won't
+      // report it as new; matches found while Claude was ranking stay new.
+      await recordKnownDepartures(tx, stored.id, candidateIds);
+      await markMatchesSeen(tx, stored.id, { foundBefore: searchStarted });
+    });
+    refresh();
+    return { status: "rebuilt" };
   } catch (error) {
     return { status: "error", message: failureMessage(error) };
   }

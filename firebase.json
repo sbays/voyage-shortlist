@@ -1,0 +1,12 @@
+{
+  "hosting": {
+    "public": "hosting",
+    "ignore": ["firebase.json", "**/.*"],
+    "rewrites": [
+      {
+        "source": "**",
+        "run": { "serviceId": "voyage-shortlist", "region": "europe-west2" }
+      }
+    ]
+  }
+}

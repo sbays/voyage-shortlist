@@ -124,9 +124,31 @@ steps:
       - --min-instances=0
       - --max-instances=2
       # Public access is granted once by `scripts/gcp-setup.sh public`, so this
-      # build account only needs run.developer, not run.admin. Redeploys keep
+      # build account only needs voyageRunDeploy (no deletes). Redeploys keep
       # the binding, but deleting and recreating the service loses it: the
       # next step warns when that has happened.
+
+  # Firebase Hosting serves voyage.bays.me and forwards to the service above
+  # (firebase.json). A new release makes its CDN drop pages cached from the
+  # previous version, whose script files this revision no longer serves.
+  # Needs `scripts/gcp-setup.sh firebase` and Firebase added to the project.
+  # The new revision is already serving, so a failure here shows as a failed
+  # step but doesn't fail the build, and check-public still runs. If it fails,
+  # rerun the release by hand: cached pages may load script files that no
+  # longer exist until it succeeds.
+  - id: release-hosting
+    name: node:24-slim
+    entrypoint: npx
+    allowFailure: true
+    args:
+      - --yes
+      # Same version as FIREBASE_TOOLS_VERSION in scripts/gcp-setup.sh.
+      - firebase-tools@15.34.2
+      - deploy
+      - --only=hosting
+      - --project=${PROJECT_ID}
+      - --non-interactive
+      - --message=${SHORT_SHA}
 
   - id: check-public
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim

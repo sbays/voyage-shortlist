@@ -12,12 +12,15 @@
 #   bash scripts/gcp-setup.sh anthropic # the Anthropic API key secret, readable by voyage-web only
 #   bash scripts/gcp-setup.sh imports   # CSV upload bucket and the demo admin token secret
 #   bash scripts/gcp-setup.sh jobs      # nightly matches and weekly reseed jobs, and their schedules
+#   bash scripts/gcp-setup.sh firebase  # Firebase Hosting in front of Cloud Run, for voyage.bays.me
+#   bash scripts/gcp-setup.sh roles     # once, on setups from before 2026-11-12: build roles without deletes
 set -euo pipefail
 
 PROJECT=tern-floe
 REGION=europe-west2
 AR_REPO=voyage-shortlist
 SERVICE=voyage-shortlist
+FIREBASE_TOOLS_VERSION=15.34.2 # also pinned in cloudbuild.yaml's release-hosting step
 CONNECTION=github
 GH_REPO_NAME=voyage-shortlist
 BUDGET_GBP=20
@@ -80,6 +83,93 @@ ensure_sa() {
   fi
 }
 
+# Custom roles for the build account: the predefined roles' permissions,
+# limited to what cloudbuild.yaml uses, with nothing that deletes. Built from
+# `gcloud iam roles describe roles/run.developer` and
+# `roles/firebasehosting.admin`. If a deploy fails with a missing permission,
+# add it here and re-run `bash scripts/gcp-setup.sh roles`.
+RUN_DEPLOY_ROLE=voyageRunDeploy
+RUN_DEPLOY_PERMISSIONS=(
+  resourcemanager.projects.get
+  run.configurations.get run.configurations.list
+  run.executions.get run.executions.list
+  run.jobs.create run.jobs.get run.jobs.list run.jobs.run run.jobs.runWithOverrides run.jobs.update
+  run.locations.list
+  run.operations.get run.operations.list
+  run.revisions.get run.revisions.list
+  run.routes.get run.routes.list
+  run.services.create run.services.get run.services.getIamPolicy run.services.list run.services.update
+  run.tasks.get run.tasks.list
+)
+# Releasing a new hosting version is sites.update; sites.create and
+# sites.delete are left out. resourcemanager.projects.list is left out too:
+# a project-level custom role rejects it as not valid.
+HOSTING_RELEASE_ROLE=voyageHostingRelease
+HOSTING_RELEASE_PERMISSIONS=(
+  firebase.clients.get firebase.clients.list firebase.projects.get
+  firebasehosting.sites.get firebasehosting.sites.list firebasehosting.sites.update
+  resourcemanager.projects.get
+)
+
+# Creates a project custom role, or sets an existing one's permissions to
+# exactly this list.
+ensure_custom_role() {
+  local id=$1 title=$2
+  shift 2
+  local perms
+  perms=$(IFS=,; echo "$*")
+  if g iam roles describe "$id" >/dev/null 2>&1; then
+    g iam roles update "$id" --permissions="$perms" >/dev/null
+    echo "role ${id} updated"
+  else
+    g iam roles create "$id" --title="$title" --stage=GA --permissions="$perms" >/dev/null
+    echo "role ${id} created"
+  fi
+}
+
+grant_build_role() {
+  g_iam projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:${BUILD_SA}" \
+    --role="$1" --condition=None >/dev/null
+}
+
+# Removes a project role from the build account, if it has it.
+revoke_build_role() {
+  local role=$1 holders
+  holders=$(g projects get-iam-policy "$PROJECT" --flatten=bindings[].members \
+    --filter="bindings.role=${role} AND bindings.members=serviceAccount:${BUILD_SA}" \
+    --format='value(bindings.role)')
+  if [[ -n "$holders" ]]; then
+    g projects remove-iam-policy-binding "$PROJECT" --member="serviceAccount:${BUILD_SA}" \
+      --role="$role" --condition=None >/dev/null
+    echo "removed ${role} from voyage-build"
+  else
+    echo "voyage-build doesn't have ${role}"
+  fi
+}
+
+run_deploy_role() {
+  say "Cloud Run deploy role for the build account (no deletes)"
+  ensure_custom_role "$RUN_DEPLOY_ROLE" "Voyage: deploy Cloud Run, no deletes" "${RUN_DEPLOY_PERMISSIONS[@]}"
+  grant_build_role "projects/${PROJECT}/roles/${RUN_DEPLOY_ROLE}"
+}
+
+hosting_release_role() {
+  say "Firebase Hosting release role for the build account (no deletes)"
+  ensure_custom_role "$HOSTING_RELEASE_ROLE" "Voyage: release Firebase Hosting" "${HOSTING_RELEASE_PERMISSIONS[@]}"
+  grant_build_role "projects/${PROJECT}/roles/${HOSTING_RELEASE_ROLE}"
+}
+
+# Moves an existing setup from the predefined roles to the custom ones:
+# grants first, so the build is never left without a role, then revokes.
+roles() {
+  run_deploy_role
+  hosting_release_role
+  say "Removing the broader predefined roles"
+  revoke_build_role roles/run.developer
+  revoke_build_role roles/firebasehosting.admin
+  say "Done. The next deploy on main checks the new roles are enough."
+}
+
 base() {
   say "Checking the active account and project"
   echo "account: $(gcloud config get account 2>/dev/null)"
@@ -110,8 +200,7 @@ base() {
   say "Least-privilege roles for the build account"
   g_iam projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:${BUILD_SA}" \
     --role=roles/logging.logWriter --condition=None >/dev/null
-  g_iam projects add-iam-policy-binding "$PROJECT" --member="serviceAccount:${BUILD_SA}" \
-    --role=roles/run.developer --condition=None >/dev/null
+  run_deploy_role
   g_iam artifacts repositories add-iam-policy-binding "$AR_REPO" --location="$REGION" \
     --member="serviceAccount:${BUILD_SA}" --role=roles/artifactregistry.writer >/dev/null
   # Lets the build deploy a service that runs as voyage-web, and nothing else.
@@ -503,10 +592,33 @@ scheduled_jobs() {
   echo "  gcloud run jobs execute ${MATCHES_JOB} --project=${PROJECT} --region=${REGION} --wait"
 }
 
+firebase() {
+  # Firebase Hosting gives the custom domain and its certificate for free and
+  # forwards every request to Cloud Run (firebase.json). Cloud Run's own domain
+  # mapping isn't offered in europe-west2. See DECISIONS.md, "custom domain".
+  say "Enabling the Firebase and Firebase Hosting APIs"
+  g services enable firebase.googleapis.com firebasehosting.googleapis.com >/dev/null
+
+  # Each deploy re-releases the hosting config so Firebase's CDN drops any
+  # page it cached from the previous version of the app. The custom role can
+  # release but not create or delete a site.
+  hosting_release_role
+  echo "voyage-build may release Firebase Hosting, and nothing else in Firebase"
+
+  say "Firebase setup done. Once, by hand, in this order:"
+  echo "  1. Add Firebase to the project (signed in as yourself):"
+  echo "       npx firebase-tools@${FIREBASE_TOOLS_VERSION} login"
+  echo "       npx firebase-tools@${FIREBASE_TOOLS_VERSION} projects:addfirebase ${PROJECT}"
+  echo "  2. First release, from the repo root:"
+  echo "       npx firebase-tools@${FIREBASE_TOOLS_VERSION} deploy --only hosting --project ${PROJECT}"
+  echo "  3. Firebase console > Hosting > Add custom domain: voyage.bays.me"
+  echo "  4. In Cloudflare, add the records it shows with the proxy OFF (grey cloud, DNS only)."
+}
+
 case "${1:-}" in
-  base | connect | trigger | public | database | imports) "$1" ;;
+  base | connect | trigger | public | database | imports | firebase | roles) "$1" ;;
   jobs) scheduled_jobs ;;
   pr-checks) pr_checks ;;
   anthropic) anthropic ;;
-  *) sed -n '5,14p' "$0"; exit 1 ;;
+  *) sed -n '5,16p' "$0"; exit 1 ;;
 esac

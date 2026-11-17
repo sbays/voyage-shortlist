@@ -109,6 +109,9 @@ HOSTING_RELEASE_PERMISSIONS=(
   firebase.clients.get firebase.clients.list firebase.projects.get
   firebasehosting.sites.get firebasehosting.sites.list firebasehosting.sites.update
   resourcemanager.projects.get
+  # firebase-tools checks the Hosting API is enabled before releasing. Read
+  # only; roles/firebasehosting.admin didn't include it either.
+  serviceusage.services.get
 )
 
 # Creates a project custom role, or sets an existing one's permissions to
